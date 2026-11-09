@@ -27,6 +27,7 @@
 | Salta mientras dictas con otra herramienta | Falsa activación dentro del dictado | Si tu dictado tiene ventana de grabación, adapta `escriba_activo.py` |
 | Se interrumpe a sí mismo (se entrecorta) | Su propia voz vuelve al micro con más fuerza que el margen de eco | Mira en `escucha.log` «El usuario interrumpe (nivel, umbral, eco)» y sube `ECHO_MARGIN` en `escucha.py` |
 | Cuesta interrumpirle | El margen de eco es demasiado exigente para tu voz | Baja `ECHO_MARGIN` (por defecto 1,5) |
+| Hay que decirle «para» dos veces | Oyes a Jarvis por un altavoz y el micro recoge su voz casi tan fuerte como la tuya | Pon los cascos como salida de audio: con ellos el eco es diez veces menor y se calla a la primera |
 | La reserva local (Ollama) no responde | Ollama escucha en el 11434 aunque `OLLAMA_HOST` diga otro puerto | Usa `http://127.0.0.1:11434` en `config.toml` |
 | `jarvis connect gcalendar` da error 400 «response_type» | `cmd /c start` cortaba la URL en el primer `&` | Ya está resuelto en `core/utils.py` (`os.startfile`) |
 | Las tareas dicen «no encuentro el proyecto» | El nombre dicho no se parece a ninguna carpeta | Revisa `proyectos` en `data\usuario.toml`, o di el nombre como se llama la carpeta |

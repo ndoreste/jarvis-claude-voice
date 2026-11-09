@@ -93,6 +93,8 @@ class FasterWhisperBackend(SpeechBackend):
                 self._model_size,
                 device=self._device,
                 compute_type=compute_type,
+                # [Nau] 09/11/2026: 8 hilos, 0,48 s por frase frente a 0,63 s (medido)
+                cpu_threads=8,
             )
         self._last_error = None
         return self._model

@@ -16,8 +16,11 @@ from cerebro_claude import FLUSH, BrainError, ClaudeBrain
 log = logging.getLogger("escucha.respuesta")
 
 SENTENCE_END = re.compile(r"[.!?…;:](?=\s)")
+# [Nau] 09/11/2026: la primera frase sale en cuanto acaba en punto, aunque no llegue nada
+# detrás («Déjame mirar tu agenda.» esperaba a la herramienta: 3 s en vez de ~1 s)
+FIRST_SENTENCE_END = re.compile(r"[.!?…](?=\s|$)")
 CLAUSE_END = re.compile(r"[.!?…;:,](?=\s)")
-FIRST_CHUNK_MIN_CHARS = 25  # una primera frase más corta se junta con la siguiente
+FIRST_CHUNK_MIN_CHARS = 12  # [Nau] 25 → 12: una primera frase más corta se junta con la siguiente
 # Si la primera frase es larga, el primer trozo corta en una coma: Jarvis empieza antes
 FIRST_CLAUSE_MIN_CHARS = 50
 NEXT_CHUNK_MIN_CHARS = 80
@@ -49,7 +52,7 @@ def pop_chunk(buffer: str, min_chars: int, pattern: re.Pattern = SENTENCE_END) -
 
 
 def pop_first_chunk(buffer: str) -> tuple[str | None, str]:
-    chunk, rest = pop_chunk(buffer, FIRST_CHUNK_MIN_CHARS)
+    chunk, rest = pop_chunk(buffer, FIRST_CHUNK_MIN_CHARS, FIRST_SENTENCE_END)
     if chunk is None:
         chunk, rest = pop_chunk(buffer, FIRST_CLAUSE_MIN_CHARS, CLAUSE_END)
     return chunk, rest

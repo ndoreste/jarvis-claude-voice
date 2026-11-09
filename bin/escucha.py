@@ -70,7 +70,9 @@ MIN_SPEECH_RMS = 0.012
 NOISE_MULTIPLIER = 2.5
 FLOOR_RISE = 0.02
 MIN_SPEECH_FRAMES = 3
-SILENCE_S = 0.6  # pausa que marca el final de la frase ([Nau] 0,7 → 0,6 el 09/11/2026)
+# Pausa que marca el final de la frase ([Nau] 0,7 → 0,6 → 0,5 el 09/11/2026). Si solo era una
+# pausa y el usuario sigue hablando, resumed_speech lo nota y vuelve a escuchar.
+SILENCE_S = 0.5
 NO_SPEECH_S = 6.0
 FOLLOW_UP_S = 12.0  # margen para seguir hablando tras cada respuesta
 MAX_UTTERANCE_S = 20.0
@@ -99,6 +101,7 @@ PLAYBACK_MARGIN_S = 0.15
 # [Nau] 09/11/2026: 4 de los últimos 6 trozos (~0,3 s de voz en ~0,5 s): una tos o un golpe
 # no lo cortan, y las bajadas entre sílabas ya no reinician la cuenta como con «5 seguidos»
 BARGE_IN_FRAMES = 4
+BARGE_IN_FRAMES_QUIET = 3  # [Nau] sin eco apreciable (cascos): ~0,25 s, lo que dura un «para»
 BARGE_IN_WINDOW = 6
 BARGE_IN_MIN_RMS = 0.04
 # [Nau] 09/11/2026: su propia voz llega al micro (con los BS9655 por Bluetooth, ~0,4 s tarde
@@ -108,8 +111,18 @@ ECHO_WINDOW_FRAMES = 8  # ~0,65 s: cubre el retraso del Bluetooth (~0,4 s) y el 
 ECHO_MARGIN = 1.5  # simulado con el eco grabado: sin cortes propios; la voz normal le corta en 0,3-0,5 s
 ECHO_SIMILARITY = 0.6  # lo «oído» al interrumpir se parece tanto a lo que decía Jarvis que es su eco
 ECHO_GAIN_START = 0.5  # cuánto eco llega por cada unidad de voz reproducida; se aprende solo
-ECHO_GAIN_RANGE = (0.05, 2.0)
+ECHO_GAIN_FILE = ROOT / "data" / "eco-aprendido.txt"
+ECHO_GAIN_RANGE = (0.02, 2.0)  # [Nau] mínimo 0,05 → 0,02: con cascos el eco es ~0,03 de lo que suena
 ECHO_LOUD = 0.03  # solo se aprende el eco de los trozos en los que Jarvis suena
+# [Nau] 09/11/2026: «para» dura ~0,3 s y, con el altavoz Bluetooth sonando, apenas sobresale
+# del eco: por volumen no se distingue (simulado con el eco grabado). Mientras Jarvis habla,
+# Whisper escucha sin parar ventanas de ~1 s cada ~0,5 s; si oye una orden de parar que no
+# está en lo que Jarvis dice en ese momento, se calla.
+STOP_SCAN_FRAMES = 12  # ~1 s de audio por ventana
+STOP_SCAN_EVERY = 6  # una ventana nueva cada ~0,5 s (si la anterior ya está transcrita)
+STOP_SCAN_MIN_FRAMES = 6  # al empezar a hablar, la primera ventana con ~0,5 s basta
+STOP_WORDS = {"para", "parar", "pare", "paren", "calla", "callate", "callese", "espera",
+              "esperate", "basta", "stop", "silencio", "alto"}
 INTERRUPTED_NOTE = f" [{USUARIO} me ha interrumpido aquí]"
 # [Nau] 09/11/2026: tareas que Jarvis encarga a Claude Code (herramienta encargar_a_claude)
 TASKS_DIR = ROOT / "data" / "tareas"
@@ -159,7 +172,7 @@ WAKE_NAME_WORD = re.compile(
     re.IGNORECASE,
 )
 SEGMENT_PREROLL_FRAMES = 8  # ~0,6 s de audio previo a la voz (no corta la primera sílaba)
-SEGMENT_END_SILENCE_S = 0.6
+SEGMENT_END_SILENCE_S = 0.5  # [Nau] 0,6 → 0,5: el saludo llega antes
 SEGMENT_MIN_S = 0.4
 SEGMENT_MAX_S = 6.0
 SEGMENT_OVERLAP_FRAMES = 25  # ~2 s que se repiten en el trozo siguiente
@@ -180,7 +193,9 @@ PRESENCE_CHECK = re.compile(
     r"(?:estas|esta|estais|estan) (?:por ahi|ahi|despierto|despiertos|disponible)|"
     r"me (?:oyes|escuchas|oye|escucha))"
 )
-CALL_REPLY = f"Hola {USUARIO}, aquí estoy como siempre, ¿en qué puedo ayudarte?"
+# [Nau] 09/11/2026: saludo corto (antes «Hola…, aquí estoy como siempre, ¿en qué puedo
+# ayudarte?», ~4 s en los que no se le podía hablar)
+CALL_REPLY = f"Dime, {USUARIO}."
 # Palabras con las que una frase no suele acabar: si termina así, el usuario sigue hablando
 UNFINISHED_ENDINGS = {
     "que", "para", "y", "o", "pero", "porque", "como", "de", "del", "el", "la", "los",
@@ -322,19 +337,29 @@ class EchoGuard:
     y a los auriculares sin que la voz del usuario lo dispare."""
 
     def __init__(self) -> None:
-        self.gain = ECHO_GAIN_START
+        # [Nau] Recuerda lo aprendido entre reinicios (con cascos baja despacio desde 0,5)
+        try:
+            saved = float(ECHO_GAIN_FILE.read_text(encoding="utf-8"))
+            low, high = ECHO_GAIN_RANGE
+            self.gain = min(high, max(low, saved))
+        except (OSError, ValueError):
+            self.gain = ECHO_GAIN_START
         self._tail = 0.0  # nivel del final del trozo anterior, cuyo eco aún puede llegar
         self._tail_until = 0.0
 
     def finish(self, envelope: np.ndarray) -> None:
         self._tail = float(envelope[-ECHO_WINDOW_FRAMES:].max()) if envelope.size else 0.0
         self._tail_until = time.monotonic() + ECHO_WINDOW_FRAMES * FRAME / SAMPLE_RATE
+        try:
+            ECHO_GAIN_FILE.write_text(f"{self.gain:.4f}", encoding="utf-8")
+        except OSError:
+            pass
 
     def tail(self) -> float:
         return self._tail if time.monotonic() < self._tail_until else 0.0
 
-    def threshold(self, played: float, base: float) -> float:
-        return max(base, ECHO_MARGIN * self.gain * played)
+    def threshold(self, played: float, base: float, margin: float = ECHO_MARGIN) -> float:
+        return max(base, margin * self.gain * played)
 
     def learn(self, played: float, heard: float) -> None:
         if played < ECHO_LOUD:
@@ -352,39 +377,95 @@ class EchoGuard:
 _echo = EchoGuard()
 
 
+def is_stop_order(heard: str, said: str) -> bool:
+    """[Nau] ¿Hay en lo oído una orden de parar («para», «calla», «espera»…) que no sea eco
+    de lo que Jarvis está diciendo («para» también es una preposición)? El nombre no cuenta:
+    Whisper tiende a escribir «Jarvis» con el eco (lo empuja la palabra clave)."""
+    said_words = {_plain(w) for w in re.findall(r"[\w']+", said)}
+    return any(_plain(w) in STOP_WORDS - said_words for w in re.findall(r"[\w']+", heard))
+
+
+def is_only_stop(text: str) -> bool:
+    """«¡Para!», «Calla, Jarvis»: solo pide que se calle, no hay nada que contestar."""
+    words = re.findall(r"[\w']+", text)
+    fillers = STOP_WORDS | {"ya", "vale", "eh", "oye", "por", "favor"}
+    return bool(words) and all(_plain(w) in fillers or is_jarvis(w) for w in words)
+
+
+class StopCheck:
+    """Transcribe en segundo plano una ventana de audio mientras Jarvis sigue hablando."""
+
+    def __init__(self, frames: list[np.ndarray]) -> None:
+        self.frames = list(frames)
+        self.heard: str | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True, name="para")
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            self.heard = transcribe(np.concatenate(self.frames))
+        except (urllib.error.URLError, OSError, KeyError, ValueError):
+            self.heard = ""
+
+    def finished(self) -> bool:
+        return not self._thread.is_alive()
+
+
 def watch_for_barge_in(stream: Microphone, floor: float | None, end: float,
-                       envelope: np.ndarray | None = None) -> list[np.ndarray] | None:
-    """Escucha mientras Jarvis habla. Si el usuario habla ~0,4 s seguidos por encima del
-    eco de la propia voz de Jarvis, corta la voz y devuelve ese audio (con algo de antes)
-    para que sea el principio de su turno."""
+                       envelope: np.ndarray | None = None, said: str = "") -> list[np.ndarray] | None:
+    """Escucha mientras Jarvis habla. Si el usuario habla (~0,3 s claramente por encima del
+    eco de la propia voz de Jarvis, o un «para» que confirma Whisper), corta la voz y
+    devuelve ese audio (con algo de antes) para que sea el principio de su turno."""
     base = max(speech_threshold(floor), BARGE_IN_MIN_RMS)
     envelope = envelope if envelope is not None else np.zeros(0)
     recent: deque[np.ndarray] = deque(maxlen=SEGMENT_PREROLL_FRAMES + BARGE_IN_WINDOW)
     votes: deque[bool] = deque(maxlen=BARGE_IN_WINDOW)
+    scan: deque[np.ndarray] = deque(maxlen=STOP_SCAN_FRAMES)
+    echoing: deque[bool] = deque(maxlen=BARGE_IN_WINDOW)  # ¿el eco esperado supera al ruido?
+    check: StopCheck | None = None
+    since_scan = 0
     index = 0
     while time.monotonic() < end:
         frame = read_frame(stream)
         recent.append(frame)
+        scan.append(frame)
+        since_scan += 1
         rms = frame_rms(frame)
         window = envelope[max(0, index - ECHO_WINDOW_FRAMES):index + 1]
         played = max(float(window.max()) if window.size else 0.0, _echo.tail())
         index += 1
         threshold = _echo.threshold(played, base)
         votes.append(rms > threshold)
+        echoing.append(threshold > base)
         if not votes[-1]:
             _echo.learn(played, rms)
-        if sum(votes) >= BARGE_IN_FRAMES and not escriba_dictando():
+        if escriba_dictando():
+            continue
+        # [Nau] Con cascos el eco no cuenta (umbral = el del ruido): un «para» de ~0,25 s basta
+        needed = BARGE_IN_FRAMES if any(echoing) else BARGE_IN_FRAMES_QUIET
+        if sum(votes) >= needed:
             winsound.PlaySound(None, 0)
             level = float(np.median([frame_rms(f) for f in list(recent)[-len(votes):]]))
             log.info("El usuario interrumpe (nivel %.3f, umbral %.3f, eco %.2f): me callo y escucho",
                      level, threshold, _echo.gain)
             return list(recent)
+        if check is not None and check.finished():
+            if is_stop_order(check.heard or "", said):
+                winsound.PlaySound(None, 0)
+                log.info("El usuario me pide que pare (%r): me callo y escucho", check.heard)
+                return check.frames
+            check = None
+        # Whisper vigila los «para» solo si hay eco fuerte (altavoz): con cascos no hace falta
+        if (check is None and any(echoing) and since_scan >= STOP_SCAN_EVERY
+                and len(scan) >= STOP_SCAN_MIN_FRAMES):
+            check = StopCheck(list(scan))
+            since_scan = 0
     _echo.finish(envelope)
     return None
 
 
 def play_file(path: Path, stream: Microphone | None = None,
-              floor: float | None = None) -> list[np.ndarray] | None:
+              floor: float | None = None, said: str = "") -> list[np.ndarray] | None:
     """Reproduce un WAV. Con micro, se puede interrumpir hablando (devuelve lo oído)."""
     if stream is None:
         winsound.PlaySound(str(path), winsound.SND_FILENAME)
@@ -393,17 +474,18 @@ def play_file(path: Path, stream: Microphone | None = None,
     stream.drain()  # lo grabado antes de empezar a hablar no es una interrupción
     envelope = playback_envelope(path)
     winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
-    return watch_for_barge_in(stream, floor, end, envelope)
+    return watch_for_barge_in(stream, floor, end, envelope, said)
 
 
-def play_audio(audio: bytes, stream: Microphone | None, floor: float | None) -> list[np.ndarray] | None:
+def play_audio(audio: bytes, stream: Microphone | None, floor: float | None,
+               said: str = "") -> list[np.ndarray] | None:
     """winsound no reproduce en segundo plano desde memoria: se alternan dos archivos."""
     global _play_slot
     _play_slot ^= 1
     PLAYBACK_DIR.mkdir(exist_ok=True)
     path = PLAYBACK_DIR / f"voz-{_play_slot}.wav"
     path.write_bytes(audio)
-    return play_file(path, stream, floor)
+    return play_file(path, stream, floor, said)
 
 
 def say_greeting(stream: Microphone) -> list[np.ndarray] | None:
@@ -412,7 +494,7 @@ def say_greeting(stream: Microphone) -> list[np.ndarray] | None:
     try:
         if not cached.exists():
             cached.write_bytes(synthesize(CALL_REPLY))
-        return play_file(cached, stream)
+        return play_file(cached, stream, said=CALL_REPLY)
     except (urllib.error.URLError, OSError, ValueError, RuntimeError):
         log.exception("No se pudo reproducir el saludo guardado")
         return say(CALL_REPLY, stream)
@@ -612,7 +694,7 @@ def say_chunks(chunks: Iterable[str], stream: Microphone | None = None,
         if first:
             log.info("Voz: primera frase sonando a los %.2f s", time.monotonic() - started)
             first = False
-        heard = play_audio(audio, stream, floor)
+        heard = play_audio(audio, stream, floor, chunk)
         if heard is not None:
             stop.set()
             return heard
@@ -658,6 +740,7 @@ class Turn:
         self.floor = floor
         self.heard_at = time.monotonic()  # el usuario acaba de callar: aquí empieza la espera
         self.text = transcribe(pcm)
+        self.transcribed_s = time.monotonic() - self.heard_at
 
     def keep_listening(self, stream: Microphone, resumed: list[np.ndarray] | None = None) -> None:
         """Mientras el usuario siga hablando (o la frase se haya quedado a medias), sigue grabando."""
@@ -763,6 +846,10 @@ def respond(stream: Microphone, messages: list[dict], model: str, turn: Turn,
             _echo.missed()
             publish("listening", "")
             return True, None
+        if interrupted and is_only_stop(turn.text):
+            log.info("%s: %s (solo me pide que pare: me callo y escucho)", USUARIO, turn.text)
+            publish("listening", "")
+            return True, None
         interrupted = False
         if is_goodbye(turn.text):
             log.info("%s: %s (fin de la conversación)", USUARIO, turn.text)
@@ -782,8 +869,11 @@ def respond(stream: Microphone, messages: list[dict], model: str, turn: Turn,
         answer.cancel()
         BRAIN.note(RESUMED_BRAIN_NOTE)
     assert answer is not None
-    heard = deliver(stream, messages, turn.text, answer, first, recalled,
-                    time.monotonic() - turn.heard_at, turn.floor)
+    latency = time.monotonic() - turn.heard_at
+    # [Nau] para medir dónde se va el tiempo (sin contar los SILENCE_S de detectar el final)
+    log.info("Tiempos: transcripción %.2f s, primera frase lista a los %.2f s",
+             turn.transcribed_s, latency)
+    heard = deliver(stream, messages, turn.text, answer, first, recalled, latency, turn.floor)
     return True, heard
 
 
