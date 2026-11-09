@@ -14,9 +14,17 @@ Jarvis lo uso a diario desde el 06/11/2026. Este es el historial real de cambios
 - **Voz por frases e interrupción**: empieza a hablar con la primera frase, y hablar ~0,4 s mientras Jarvis habla lo corta.
 - **Hilo de 5 minutos**: si vuelves a llamarle pronto, sigue la conversación.
 
+### Cambiado
+- **Solo despierta con «¿Qué pasa, Jarvis?»** (o «¿Qué dices, Jarvis?», como suele escribirlo Whisper), al principio de la frase. «Hola, Jarvis», «Hey Jarvis» (openWakeWord, ahora apagado con `WAKE_BY_HEY_JARVIS`) o nombrarlo a mitad de frase ya no lo despiertan.
+- **Responde antes**: el cerebro va con `--effort low` y sin pensamiento extendido (primera palabra en ~0,8 s, antes 2,2 s), dice «me pongo con ello» antes de lanzar una tarea (antes, 12–15 s de silencio) y Whisper usa `beam_size=1`.
+
 ### Arreglado
 | Síntoma | Causa | Arreglo |
 |---|---|---|
+| Hablaba solo de vez en cuando | Se activaba con «Jarvis» en cualquier parte de la frase (al hablar *de* él, por teléfono, un directo), «habéis» pasaba el filtro fonético y Whisper sacaba un «Jarvis» suelto del audio de un vídeo | Solo la frase de despertar, al principio de la frase; filtro fonético más estricto |
+| Se entrecortaba: cortaba sus respuestas al segundo y contestaba a su propia voz | Con auriculares Bluetooth su voz vuelve al micro (~0,4 s tarde, hasta el 34 % del nivel) y superaba el umbral fijo de interrupción | Cancelación de eco: compara el micro con lo que suena, aprende cuánto eco llega y, si lo que le interrumpió se parece a lo que decía, no lo contesta |
+| Costaba interrumpirle | Pedía 0,4 s de voz seguida y las pausas entre sílabas reiniciaban la cuenta | Basta con voz en 4 de los últimos 6 trozos (~0,3–0,5 s) |
+| `sincronizar.ps1` se paraba a medias, sin parche ni escáner de secretos | El aviso de git por un archivo nuevo de OpenJarvis era un error fatal con `ErrorActionPreference = 'Stop'` | `git ls-files` sin `--error-unmatch` |
 | Cada tarea abría una ventana de Terminal | El `pythonw.exe` del entorno de uv es un lanzador que abre `python.exe` con consola | `_python()` usa el `pythonw.exe` de la instalación base |
 | Voz de Windows teniendo 74.000 créditos | La clave de ElevenLabs estaba limitada a 10.000 créditos por periodo (401) | Subir el límite. Además, la reserva ahora **lee la respuesta** en vez de perderla |
 | Tardaba 5–21 s y perdía el hilo | Haiku con herramientas por OpenRouter; cada conversación empezaba de cero | Cerebro Sonnet, voz mientras escribe e hilo de 5 min |

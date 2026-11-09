@@ -8,7 +8,7 @@ nombre = "Alex"
 perfil = """Alex, de Madrid; estudia administración de sistemas y le interesan Linux, \
 las redes y la automatización"""
 
-# Carpeta con tus proyectos de Claude Code. «¿Qué dices, Jarvis? En el proyecto de LinkedIn, …»
+# Carpeta con tus proyectos de Claude Code. «¿Qué pasa, Jarvis? En el proyecto de LinkedIn, …»
 # hace la tarea dentro de la subcarpeta que más se parezca a lo que digas.
 proyectos = "~/claudeProjects"
 

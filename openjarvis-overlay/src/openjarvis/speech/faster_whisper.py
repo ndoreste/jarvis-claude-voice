@@ -122,7 +122,9 @@ class FasterWhisperBackend(SpeechBackend):
                 # salía como «Hola ya Arbis»); con ruido o silencio no lo inventa.
                 # vad_filter: el detector de voz (Silero) quita ruido, viento y silencios
                 # antes de transcribir, así Whisper no se inventa frases con ellos.
-                kwargs = {"hotwords": HOTWORDS, "vad_filter": True}
+                # [Nau] 09/11/2026: beam_size=1 (búsqueda voraz): igual de preciso con frases
+                # cortas y hasta 0,4 s más rápido que el beam 5 por defecto con la CPU cargada.
+                kwargs = {"hotwords": HOTWORDS, "vad_filter": True, "beam_size": 1}
                 if language:
                     kwargs["language"] = language
 

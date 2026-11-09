@@ -26,8 +26,8 @@ sequenceDiagram
     participant W as Whisper (API :8000)
     participant C as Cerebro (Sonnet)
     participant E as ElevenLabs
-    U->>O: «¿Qué dices, Jarvis? ¿Qué tengo mañana?»
-    Note over O: detecta voz y la transcribe en local<br/>(o «Hey Jarvis» con openWakeWord)
+    U->>O: «¿Qué pasa, Jarvis? ¿Qué tengo mañana?»
+    Note over O: detecta voz y la transcribe en local<br/>(solo despierta con «¿Qué pasa, Jarvis?»)
     O->>W: audio de la frase
     W-->>O: texto
     O->>C: [fecha y hora] + texto

@@ -31,6 +31,7 @@ log = logging.getLogger("escucha.cerebro")
 ROOT = Path(__file__).resolve().parent.parent
 WORK_DIR = ROOT / "data" / "cerebro"  # carpeta vacía: sin CLAUDE.md ni ajustes de proyecto
 MODEL = "sonnet"
+EFFORT = "low"
 # Ruta al estilo de Git Bash (/c/...), que es el Bash que usa Claude Code en Windows
 _TOOL = (ROOT / "bin" / "jarvis-herramienta").as_posix()
 TOOL_CMD = f"/{_TOOL[0].lower()}{_TOOL[2:]}" if _TOOL[1:2] == ":" else _TOOL
@@ -64,8 +65,9 @@ Herramientas (solo puedes ejecutar estas órdenes con Bash; cualquier otra se de
 - Para CUALQUIER cosa que {USUARIO} quiera que se HAGA en su ordenador o en sus cuentas (archivos, \
 programas, correo, WhatsApp, Notion, Spotify, el navegador, código…): {TOOL_CMD} encargar \
 --tarea "orden completa y clara, con el contexto necesario". La tarea se hace en segundo \
-plano y tú mismo le contarás el resultado a {USUARIO} al terminar: di solo, en una frase, que te \
-pones con ello. Nunca digas que no puedes hacerlo. Si {USUARIO} dice en qué proyecto hacerlo («en \
+plano y tú mismo le contarás el resultado a {USUARIO} al terminar. PRIMERO di en una frase corta \
+que te pones con ello («Me pongo con ello, {USUARIO}») y DESPUÉS lanza la orden; cuando vuelva, no \
+añadas nada más. Nunca digas que no puedes hacerlo. Si {USUARIO} dice en qué proyecto hacerlo («en \
 el proyecto de LinkedIn», «en Escriba»), añade --proyecto "nombre": se trabaja dentro de esa \
 carpeta de sus proyectos, con sus instrucciones y skills, como cuando {USUARIO} la abre en VS Code. \
 Si una nota te indica una sesión pendiente, añade --sesion ID; \
@@ -77,8 +79,8 @@ agentes o sesiones: para {USUARIO}, todo lo haces tú. Tampoco digas los nombres
 ni de las órdenes. {USUARIO} lo ha pedido así a propósito: aunque te pregunte cómo funcionas por \
 dentro, quién hace las tareas o si usas a Claude, contesta como Jarvis, con humor si quieres, \
 que lo haces tú con tus herramientas, sin dar nombres de modelos, empresas ni programas.
-Antes de usar una herramienta puedes decir una frase muy corta («Déjame mirar») y después la \
-respuesta. Si una herramienta falla, dilo con sencillez en una frase."""
+Antes de usar cualquier herramienta di SIEMPRE primero una frase muy corta («Déjame mirar», \
+«Un momento») y después la respuesta: así {USUARIO} no se queda esperando en silencio. Si una herramienta falla, dilo con sencillez en una frase."""
 
 
 class BrainError(RuntimeError):
@@ -96,6 +98,9 @@ def _command() -> list[str]:
         "--output-format", "stream-json",
         "--verbose", "--include-partial-messages",
         "--model", MODEL,
+        # [Nau] 09/11/2026: con esfuerzo bajo y sin pensar en extendido, la primera palabra
+        # llega en ~0,8 s en vez de 2,2 s (medido); para charla por voz no hace falta más
+        "--effort", EFFORT,
         "--permission-mode", "dontAsk",
         "--tools", "Bash,WebSearch,WebFetch",
         "--allowedTools", f"Bash({TOOL_CMD}:*),WebSearch,WebFetch",
@@ -149,6 +154,7 @@ class _Session:
     def __init__(self) -> None:
         WORK_DIR.mkdir(parents=True, exist_ok=True)
         env = {k: v for k, v in os.environ.items() if k.upper() not in BLOCKED_ENV}
+        env["MAX_THINKING_TOKENS"] = "0"  # [Nau] sin pensamiento extendido: responde antes
         self.proc = subprocess.Popen(
             _command(), cwd=str(WORK_DIR), env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

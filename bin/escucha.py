@@ -96,8 +96,20 @@ FALLBACK_VOICE = "Microsoft Helena"
 PLAYBACK_DIR = Path(tempfile.gettempdir()) / "jarvis-voz"
 PLAYBACK_MARGIN_S = 0.15
 # [Nau] 09/11/2026: si el usuario habla mientras Jarvis contesta, se calla y le escucha
-BARGE_IN_FRAMES = 5  # ~0,4 s de voz seguida (una tos o un golpe no lo cortan)
-BARGE_IN_MIN_RMS = 0.02
+# [Nau] 09/11/2026: 4 de los últimos 6 trozos (~0,3 s de voz en ~0,5 s): una tos o un golpe
+# no lo cortan, y las bajadas entre sílabas ya no reinician la cuenta como con «5 seguidos»
+BARGE_IN_FRAMES = 4
+BARGE_IN_WINDOW = 6
+BARGE_IN_MIN_RMS = 0.04
+# [Nau] 09/11/2026: su propia voz llega al micro (con los BS9655 por Bluetooth, ~0,4 s tarde
+# y hasta al 34 % del nivel de lo que suena) y se interrumpía a sí mismo. Solo cuenta como
+# interrupción lo que supera ECHO_MARGIN veces el eco esperado de lo que está sonando.
+ECHO_WINDOW_FRAMES = 8  # ~0,65 s: cubre el retraso del Bluetooth (~0,4 s) y el de unos con cable
+ECHO_MARGIN = 1.5  # simulado con el eco grabado: sin cortes propios; la voz normal le corta en 0,3-0,5 s
+ECHO_SIMILARITY = 0.6  # lo «oído» al interrumpir se parece tanto a lo que decía Jarvis que es su eco
+ECHO_GAIN_START = 0.5  # cuánto eco llega por cada unidad de voz reproducida; se aprende solo
+ECHO_GAIN_RANGE = (0.05, 2.0)
+ECHO_LOUD = 0.03  # solo se aprende el eco de los trozos en los que Jarvis suena
 INTERRUPTED_NOTE = f" [{USUARIO} me ha interrumpido aquí]"
 # [Nau] 09/11/2026: tareas que Jarvis encarga a Claude Code (herramienta encargar_a_claude)
 TASKS_DIR = ROOT / "data" / "tareas"
@@ -154,18 +166,14 @@ SEGMENT_OVERLAP_FRAMES = 25  # ~2 s que se repiten en el trozo siguiente
 DIGITAL_SILENCE_RMS = 1e-4
 LEVEL_LOG_EVERY_S = 120
 NAME_SIMILARITY = 0.6
-# [Nau] Para que cuente como llamada, «Jarvis» va entre las 3 primeras palabras de
-# la frase o la frase tiene como mucho 4 palabras (si no, habla de él, no le llama)
-NAME_MAX_POSITION = 3
-CALL_MAX_WORDS = 4
-BARE_NAME_MAX_S = 3.0  # un «Jarvis» dicho solo dura ~2 s con el preroll y la pausa final
-GREETINGS = {"hola", "oye", "hey", "ey", "vale", "buenas", "buenos", "dias"}
-# «¿Qué dices, Jarvis?» (y como lo escribe Whisper: «dice», «dises»…) solo le llama
-CALL_WORDS = {"dices", "dice", "dises", "dise", "decis", "pasa"}
-# [Nau] 09/11/2026: saludos y muletillas que pueden ir antes del nombre sin que deje de ser una llamada
-LEAD_WORDS = GREETINGS | CALL_WORDS | {
-    "que", "pasa", "tal", "eh", "venga", "bueno", "pues", "tardes", "noches", "oiga", "mira", "a", "y",
-}
+# [Nau] 09/11/2026: la ÚNICA forma de despertarlo es «¿Qué pasa, Jarvis?» (pedido por Nau).
+# Se acepta también «¿Qué dices, Jarvis?»: Whisper suele escribir así «qué pasa».
+CALL_WORDS = {"pasa", "paso", "dices", "dice", "dises", "dise", "decis"}
+# Lo que puede ir antes del «qué» sin que deje de ser la llamada («Oye, ¿qué pasa, Jarvis?»)
+LEAD_WORDS = {"hola", "oye", "hey", "ey", "eh", "vale", "bueno", "pues", "venga", "oiga", "y", "a",
+              "no", "buenas"}
+# «Hey Jarvis» (openWakeWord) desactivado el 09/11/2026: Nau quiere despertarlo solo con su frase
+WAKE_BY_HEY_JARVIS = False
 # Frases que solo comprueban si está («Jarvis, ¿estás por ahí?»): se contestan con el saludo fijo
 PRESENCE_CHECK = re.compile(
     r"(?:(?:que|y) )?(?:que pasa|que tal|despierta|"
@@ -292,20 +300,86 @@ def wav_seconds(path: Path) -> float:
         return wav.getnframes() / wav.getframerate()
 
 
-def watch_for_barge_in(stream: Microphone, floor: float | None, end: float) -> list[np.ndarray] | None:
-    """Escucha mientras Jarvis habla. Si el usuario habla ~0,4 s seguidos, corta la voz y
-    devuelve ese audio (con algo de antes) para que sea el principio de su turno."""
-    threshold = max(speech_threshold(floor), BARGE_IN_MIN_RMS)
-    recent: deque[np.ndarray] = deque(maxlen=SEGMENT_PREROLL_FRAMES + BARGE_IN_FRAMES)
-    run = 0
+def playback_envelope(path: Path) -> np.ndarray:
+    """Nivel (RMS) de lo que va a sonar, en trozos del mismo tamaño que los del micro."""
+    try:
+        with wave.open(str(path), "rb") as wav:
+            rate, channels = wav.getframerate(), wav.getnchannels()
+            if wav.getsampwidth() != 2:
+                return np.zeros(0)
+            pcm = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16)
+    except (OSError, wave.Error, EOFError):
+        return np.zeros(0)
+    pcm = pcm.reshape(-1, channels).mean(axis=1) / 32768.0
+    block = max(1, int(rate * FRAME / SAMPLE_RATE))
+    usable = len(pcm) // block * block
+    return np.sqrt(np.mean(pcm[:usable].reshape(-1, block) ** 2, axis=1))
+
+
+class EchoGuard:
+    """[Nau] Cuánto de lo que dice Jarvis vuelve al micro. Sigue el percentil alto de la
+    relación micro/voz reproducida (sube rápido, baja despacio), así se adapta al volumen
+    y a los auriculares sin que la voz del usuario lo dispare."""
+
+    def __init__(self) -> None:
+        self.gain = ECHO_GAIN_START
+        self._tail = 0.0  # nivel del final del trozo anterior, cuyo eco aún puede llegar
+        self._tail_until = 0.0
+
+    def finish(self, envelope: np.ndarray) -> None:
+        self._tail = float(envelope[-ECHO_WINDOW_FRAMES:].max()) if envelope.size else 0.0
+        self._tail_until = time.monotonic() + ECHO_WINDOW_FRAMES * FRAME / SAMPLE_RATE
+
+    def tail(self) -> float:
+        return self._tail if time.monotonic() < self._tail_until else 0.0
+
+    def threshold(self, played: float, base: float) -> float:
+        return max(base, ECHO_MARGIN * self.gain * played)
+
+    def learn(self, played: float, heard: float) -> None:
+        if played < ECHO_LOUD:
+            return
+        ratio = min(heard / played, 3 * self.gain)  # la voz del usuario no lo dispara
+        step = 0.1 if ratio > self.gain else 0.01
+        low, high = ECHO_GAIN_RANGE
+        self.gain = min(high, max(low, self.gain + step * (ratio - self.gain)))
+
+    def missed(self) -> None:
+        """Se ha cortado con su propio eco (p. ej. al subir el volumen de golpe): más margen."""
+        self.gain = min(ECHO_GAIN_RANGE[1], self.gain * 1.5)
+
+
+_echo = EchoGuard()
+
+
+def watch_for_barge_in(stream: Microphone, floor: float | None, end: float,
+                       envelope: np.ndarray | None = None) -> list[np.ndarray] | None:
+    """Escucha mientras Jarvis habla. Si el usuario habla ~0,4 s seguidos por encima del
+    eco de la propia voz de Jarvis, corta la voz y devuelve ese audio (con algo de antes)
+    para que sea el principio de su turno."""
+    base = max(speech_threshold(floor), BARGE_IN_MIN_RMS)
+    envelope = envelope if envelope is not None else np.zeros(0)
+    recent: deque[np.ndarray] = deque(maxlen=SEGMENT_PREROLL_FRAMES + BARGE_IN_WINDOW)
+    votes: deque[bool] = deque(maxlen=BARGE_IN_WINDOW)
+    index = 0
     while time.monotonic() < end:
         frame = read_frame(stream)
         recent.append(frame)
-        run = run + 1 if frame_rms(frame) > threshold else 0
-        if run >= BARGE_IN_FRAMES and not escriba_dictando():
+        rms = frame_rms(frame)
+        window = envelope[max(0, index - ECHO_WINDOW_FRAMES):index + 1]
+        played = max(float(window.max()) if window.size else 0.0, _echo.tail())
+        index += 1
+        threshold = _echo.threshold(played, base)
+        votes.append(rms > threshold)
+        if not votes[-1]:
+            _echo.learn(played, rms)
+        if sum(votes) >= BARGE_IN_FRAMES and not escriba_dictando():
             winsound.PlaySound(None, 0)
-            log.info("El usuario interrumpe: me callo y escucho")
+            level = float(np.median([frame_rms(f) for f in list(recent)[-len(votes):]]))
+            log.info("El usuario interrumpe (nivel %.3f, umbral %.3f, eco %.2f): me callo y escucho",
+                     level, threshold, _echo.gain)
             return list(recent)
+    _echo.finish(envelope)
     return None
 
 
@@ -317,8 +391,9 @@ def play_file(path: Path, stream: Microphone | None = None,
         return None
     end = time.monotonic() + wav_seconds(path) + PLAYBACK_MARGIN_S
     stream.drain()  # lo grabado antes de empezar a hablar no es una interrupción
+    envelope = playback_envelope(path)
     winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
-    return watch_for_barge_in(stream, floor, end)
+    return watch_for_barge_in(stream, floor, end, envelope)
 
 
 def play_audio(audio: bytes, stream: Microphone | None, floor: float | None) -> list[np.ndarray] | None:
@@ -651,7 +726,28 @@ def deliver(stream: Microphone, messages: list[dict], text: str, answer: Answer,
     return done_speaking(stream, heard)
 
 
-def respond(stream: Microphone, messages: list[dict], model: str, turn: Turn) -> tuple[bool, Heard]:
+def _last_said(messages: list[dict]) -> str:
+    said = next((m["content"] for m in reversed(messages) if m.get("role") == "assistant"), "")
+    return said.replace(INTERRUPTED_NOTE, "")
+
+
+def is_own_echo(heard: str, said: str) -> bool:
+    """[Nau] ¿Lo que «interrumpió» a Jarvis es su propia voz vuelta al micro? Whisper la
+    transcribe parecida a lo que decía («pola naú» por «Hola Nau», «Claro, no» por «Claro, Nau»)."""
+    heard_words = [_plain(w) for w in re.findall(r"[\w']+", heard)]
+    said_words = [_plain(w) for w in re.findall(r"[\w']+", said)]
+    if not heard_words or len(said_words) < len(heard_words):
+        return False
+    target = " ".join(heard_words)
+    size = len(heard_words)
+    return any(
+        difflib.SequenceMatcher(None, target, " ".join(said_words[i:i + size])).ratio() >= ECHO_SIMILARITY
+        for i in range(len(said_words) - size + 1)
+    )
+
+
+def respond(stream: Microphone, messages: list[dict], model: str, turn: Turn,
+            interrupted: bool = False) -> tuple[bool, Heard]:
     """Responde cuando el usuario ha terminado de hablar. False si se despide o no dice nada útil."""
     resumed = None
     answer, first, recalled = None, None, None
@@ -662,6 +758,12 @@ def respond(stream: Microphone, messages: list[dict], model: str, turn: Turn) ->
         if not useful(turn.text):
             log.info("Ignorado (sin texto útil): %r", turn.text)
             return False, None
+        if interrupted and is_own_echo(turn.text, _last_said(messages)):
+            log.info("Lo que me interrumpió era mi propio eco (%r): no contesto y sigo escuchando", turn.text)
+            _echo.missed()
+            publish("listening", "")
+            return True, None
+        interrupted = False
         if is_goodbye(turn.text):
             log.info("%s: %s (fin de la conversación)", USUARIO, turn.text)
             publish("speaking", GOODBYE_REPLY)
@@ -696,7 +798,7 @@ def handle_turn(stream: Microphone, messages: list[dict], model: str, wait_s: fl
     if escriba_dictando():
         log.info("El usuario está dictando con Escriba: cierro la conversación sin responder")
         return False, None
-    return respond(stream, messages, model, Turn(pcm, floor))
+    return respond(stream, messages, model, Turn(pcm, floor), interrupted=prefix is not None)
 
 
 def finished_tasks() -> list[dict]:
@@ -832,47 +934,33 @@ def is_jarvis(word: str) -> bool:
     )
 
 
-def _calls_him(text: str, hit: re.Match) -> bool:
-    """[Nau] 09/11/2026: ¿le llama o solo habla de él? Cuenta si el nombre va al
-    principio de la frase («Hola Jarvis, …», «Jarvis, mira…») o la frase es corta
-    («¿Qué dices, Jarvis?»). «…lo guarde en la memoria de este Jarvis» no cuenta."""
-    start = max((m.end() for m in re.finditer(r"[.?!¿¡…;]", text[:hit.start()])), default=0)
-    end = re.search(r"[.?!¿¡…;]", text[hit.end():])
-    clause = text[start:hit.end() + (end.start() if end else len(text))]
-    words = re.findall(r"[\w']+", clause)
-    # «Oye, bueno, ¿qué pasa, Jarvis?»: los saludos y muletillas del principio no cuentan
-    before = re.findall(r"[\w']+", text[start:hit.start()])
-    while before and _plain(before[0]) in LEAD_WORDS:
-        before.pop(0)
-    return len(before) < NAME_MAX_POSITION or len(words) <= CALL_MAX_WORDS
+def _wake_hit(text: str) -> re.Match | None:
+    """[Nau] 09/11/2026: solo despierta con «¿Qué pasa, Jarvis?» (o «¿Qué dices, Jarvis?»,
+    como suele escribirlo Whisper), al principio de la frase: «Oye, ¿qué pasa, Jarvis?» sí;
+    «Hola Jarvis», «Jarvis, mira…» o hablar de él a mitad de frase, no."""
+    words = list(re.finditer(r"[\w']+", text))
+    for i, match in enumerate(words):
+        if i < 2 or not is_jarvis(match.group()):
+            continue
+        if _plain(words[i - 2].group()) != "que" or _plain(words[i - 1].group()) not in CALL_WORDS:
+            continue
+        start = max((m.end() for m in re.finditer(r"[.?!¿¡…;]", text[:words[i - 2].start()])), default=0)
+        before = re.findall(r"[\w']+", text[start:words[i - 2].start()])
+        if all(_plain(w) in LEAD_WORDS for w in before):
+            return match
+    return None
 
 
 def wake_by_name(text: str) -> str | None:
-    """Si la frase llama a Jarvis devuelve la pregunta ('' si solo le llama)."""
-    question = _question_after_name(text)
-    # [Nau] «Jarvis, ¿estás por ahí?», «¿Qué pasa, Jarvis?»: solo le llama → saludo fijo
-    if question and PRESENCE_CHECK.fullmatch(_plain(question).strip(" ,.;:!?¡¿")):
-        return ""
-    return question
-
-
-def _question_after_name(text: str) -> str | None:
-    words = list(re.finditer(r"[\w']+", text))
-    hit = next((m for m in words if is_jarvis(m.group()) and _calls_him(text, m)), None)
+    """Si la frase es «¿Qué pasa, Jarvis?» devuelve lo que pide después ('' si solo le llama)."""
+    hit = _wake_hit(text)
     if hit is None:
         return None
     rest = text[hit.end():].strip(" ,.;:!?¡¿")
-    before = [m.group() for m in words if m.end() <= hit.start()]
-    # «¿Qué dices, Jarvis?»: solo le llaman → saludo fijo
-    if {_plain(w) for w in before[-2:]} & CALL_WORDS and len(rest.split()) < 2:
+    # «¿Qué pasa, Jarvis? ¿Estás por ahí?»: solo le llama → saludo fijo
+    if len(rest.split()) < 2 or PRESENCE_CHECK.fullmatch(_plain(rest)):
         return ""
-    if len(rest.split()) >= 2:
-        return rest
-    # «¿Qué tal, Jarvis?»: la pregunta va antes del nombre
-    while before and _plain(before[0]) in GREETINGS:
-        before.pop(0)
-    whole = (" ".join(before) + " " + rest).strip()
-    return whole if len(whole.split()) >= 2 else ""
+    return rest
 
 
 class Segmenter:
@@ -952,7 +1040,7 @@ def listen(stream: Microphone, wake: Model, model_name: str) -> None:
     last_sound = time.monotonic()
     deaf_until = 0.0  # [Nau] hasta cuándo se ignora lo oído por un dictado de Escriba
     last_task_check = time.monotonic()
-    log.info("Escuchando su nombre («Hola Jarvis», «¿Qué pasa, Jarvis?»…) / «Hey Jarvis» (cerebro Sonnet; reserva %s)", model_name)
+    log.info("Escuchando «¿Qué pasa, Jarvis?» (cerebro Sonnet; reserva %s)", model_name)
     publish("idle", "")
     while True:
         frame = read_frame(stream)
@@ -969,7 +1057,7 @@ def listen(stream: Microphone, wake: Model, model_name: str) -> None:
 
         question: str | None = None
         tasks: list[dict] = []
-        score = wake.predict(frame).get(WAKE_MODEL, 0.0)
+        score = wake.predict(frame).get(WAKE_MODEL, 0.0) if WAKE_BY_HEY_JARVIS else 0.0
         # [Nau] el usuario dicta con Escriba: ni «Hey Jarvis» ni nombre; el audio se descarta sin transcribir
         if escriba_dictando():
             if now >= deaf_until:
@@ -993,12 +1081,6 @@ def listen(stream: Microphone, wake: Model, model_name: str) -> None:
                 log.exception("No se pudo transcribir una frase")
                 heard = ""
             question = wake_by_name(heard) if useful(heard) else None
-            # [Nau] 09/11/2026: un «Jarvis» suelto sacado de varios segundos de audio
-            # (un vídeo, un directo) es Whisper rellenando con la palabra clave, no una llamada
-            seconds = len(segment) / SAMPLE_RATE
-            if question is not None and len(heard.split()) == 1 and seconds > BARE_NAME_MAX_S:
-                log.info("«Jarvis» suelto en %.1f s de audio: lo ignoro", seconds)
-                question = None
             if question is not None:
                 log.info("Activado por nombre: %r", heard)
             else:

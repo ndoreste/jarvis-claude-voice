@@ -55,8 +55,10 @@ foreach ($rel in $overlay) {
 }
 
 # 3. Parche legible con los cambios sobre OpenJarvis y versión de partida
+# Solo los archivos que OpenJarvis ya tenía (M). Sin --error-unmatch: con ErrorActionPreference
+# = 'Stop', el aviso de git por un archivo nuevo (A) paraba el script aquí, sin parche ni escáner.
 $modified = $overlay | Where-Object { Test-Path (Join-Path $src $_) -PathType Leaf } |
-    Where-Object { git -C $src ls-files --error-unmatch $_ 2>$null }
+    Where-Object { git -C $src ls-files -- $_ }
 git -C $src diff -- @modified | Set-Content -Encoding utf8 (Join-Path $dest 'cambios-openjarvis.patch')
 git -C $src rev-parse HEAD | Set-Content -Encoding ascii (Join-Path $dest 'UPSTREAM_COMMIT')
 

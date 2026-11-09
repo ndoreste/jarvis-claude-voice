@@ -466,7 +466,7 @@ index 7ad27d4..92056a2 100644
          data=[
              ModelObject(
 diff --git a/src/openjarvis/speech/faster_whisper.py b/src/openjarvis/speech/faster_whisper.py
-index 8955fc5..1a852a0 100644
+index 8955fc5..d66717c 100644
 --- a/src/openjarvis/speech/faster_whisper.py
 +++ b/src/openjarvis/speech/faster_whisper.py
 @@ -22,6 +22,8 @@ except ImportError:
@@ -478,7 +478,7 @@ index 8955fc5..1a852a0 100644
  
  @SpeechRegistry.register("faster-whisper")
  class FasterWhisperBackend(SpeechBackend):
-@@ -116,7 +118,11 @@ class FasterWhisperBackend(SpeechBackend):
+@@ -116,7 +118,13 @@ class FasterWhisperBackend(SpeechBackend):
                  with tmp:
                      tmp.write(audio)
  
@@ -487,7 +487,9 @@ index 8955fc5..1a852a0 100644
 +                # salía como «Hola ya Arbis»); con ruido o silencio no lo inventa.
 +                # vad_filter: el detector de voz (Silero) quita ruido, viento y silencios
 +                # antes de transcribir, así Whisper no se inventa frases con ellos.
-+                kwargs = {"hotwords": HOTWORDS, "vad_filter": True}
++                # [Nau] 09/11/2026: beam_size=1 (búsqueda voraz): igual de preciso con frases
++                # cortas y hasta 0,4 s más rápido que el beam 5 por defecto con la CPU cargada.
++                kwargs = {"hotwords": HOTWORDS, "vad_filter": True, "beam_size": 1}
                  if language:
                      kwargs["language"] = language
  
