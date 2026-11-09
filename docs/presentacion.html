@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Jarvis · asistente de voz con Claude</title>
+<!-- Fuente de docs/presentacion.pdf. Se exporta con scripts/exportar-presentacion.cjs (1920×1080). -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #020302; --bg2: #0b0e04;
+    --neon: #f0ff00; --neon-hot: #fdffd0; --neon-dim: rgba(240,255,0,.42); --neon-faint: rgba(240,255,0,.07);
+    --cyan: #38bdf8; --cyan-dim: rgba(56,189,248,.35);
+    --alert: #ff2e40; --ok: #3dff9a;
+    --text: #f8ffd9; --muted: #8e9a5c;
+    --glass: linear-gradient(160deg, rgba(14,42,76,.78), rgba(8,22,46,.62));
+    --brand: "Orbitron", sans-serif; --display: "Chakra Petch", sans-serif; --mono: "IBM Plex Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  @page { size: 1920px 1080px; margin: 0; }
+  html, body { background: var(--bg); color: var(--text); font-family: var(--display); }
+  .slide {
+    width: 1920px; height: 1080px; position: relative; overflow: hidden; page-break-after: always;
+    padding: 110px 130px 90px;
+    background:
+      radial-gradient(1200px 700px at 78% 12%, rgba(56,189,248,.10), transparent 60%),
+      radial-gradient(900px 600px at 10% 100%, rgba(240,255,0,.06), transparent 60%),
+      linear-gradient(180deg, #050806, var(--bg));
+  }
+  .slide::before { /* rejilla de puntos como el HUD */
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image: radial-gradient(rgba(56,189,248,.18) 1px, transparent 1.4px);
+    background-size: 36px 36px; mask-image: linear-gradient(180deg, rgba(0,0,0,.55), transparent 85%);
+  }
+  .slide > * { position: relative; }
+  .kicker { font-family: var(--mono); font-size: 24px; letter-spacing: .32em; color: var(--cyan); text-transform: uppercase; }
+  .kicker::before { content: ">_ "; color: var(--neon); }
+  h1 { font-family: var(--brand); font-weight: 900; color: var(--neon); text-shadow: 0 0 28px rgba(240,255,0,.55); }
+  h2 { font-family: var(--display); font-weight: 700; font-size: 68px; line-height: 1.08; margin: 22px 0 46px; max-width: 1500px; }
+  h2 em { font-style: normal; color: var(--neon); text-shadow: 0 0 18px rgba(240,255,0,.35); }
+  p.lead { font-size: 34px; line-height: 1.45; color: #dfe8c0; max-width: 1350px; }
+  .footer {
+    position: absolute; left: 130px; right: 130px; bottom: 46px; display: flex; justify-content: space-between;
+    font-family: var(--mono); font-size: 20px; color: var(--muted); letter-spacing: .08em;
+  }
+  .footer b { color: var(--neon); font-weight: 500; }
+  .card {
+    background: var(--glass); border: 1px solid var(--cyan-dim); border-radius: 6px;
+    clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
+    padding: 34px 38px;
+  }
+  .card h3 { font-family: var(--mono); font-size: 25px; letter-spacing: .14em; color: var(--neon); text-transform: uppercase; margin-bottom: 16px; }
+  .card p, .card li { font-size: 27px; line-height: 1.42; color: #e6eecf; }
+  .grid { display: grid; gap: 30px; }
+  code, .mono { font-family: var(--mono); color: var(--neon-hot); }
+  .tag { display: inline-block; font-family: var(--mono); font-size: 20px; padding: 6px 14px; border: 1px solid var(--neon-dim); color: var(--neon); margin: 0 10px 10px 0; }
+
+  /* Portada */
+  .cover { padding: 0; display: grid; grid-template-columns: 1fr; }
+  .cover .bg { position: absolute; inset: 0; background: url("../assets/img/hud-escuchando.jpg") center/cover; opacity: .32; filter: saturate(1.1); }
+  .cover .shade { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(2,3,2,.96) 0%, rgba(2,3,2,.78) 48%, rgba(2,3,2,.25) 100%); }
+  .cover .inner { position: absolute; left: 130px; top: 190px; width: 1150px; }
+  .cover h1 { font-size: 150px; letter-spacing: .06em; margin: 26px 0 30px; }
+  .cover .sub { font-size: 50px; font-weight: 600; line-height: 1.2; }
+  .cover .sub em { font-style: normal; color: var(--neon); }
+  .cover .meta { margin-top: 56px; font-family: var(--mono); font-size: 26px; color: var(--muted); line-height: 1.7; }
+  .cover .meta b { color: var(--text); font-weight: 500; }
+
+  /* Tabla de ejemplos */
+  table.ex { width: 100%; border-collapse: separate; border-spacing: 0 16px; }
+  table.ex td { padding: 24px 30px; font-size: 30px; vertical-align: middle; background: rgba(8,22,46,.55); border-top: 1px solid var(--cyan-dim); border-bottom: 1px solid var(--cyan-dim); }
+  table.ex td:first-child { width: 45%; font-family: var(--mono); color: var(--neon-hot); border-left: 3px solid var(--neon); }
+  table.ex td:last-child { color: #dfe8c0; border-right: 1px solid var(--cyan-dim); }
+
+  /* Diagrama */
+  .diagram { position: relative; width: 1660px; height: 640px; margin-top: 4px; }
+  .node { position: absolute; background: var(--glass); border: 1.5px solid var(--cyan-dim); padding: 22px 24px; text-align: center;
+          clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px)); }
+  .node b { display: block; font-family: var(--mono); font-size: 21px; letter-spacing: .16em; color: var(--neon); margin-bottom: 8px; }
+  .node span { font-size: 25px; line-height: 1.3; color: #eef4d8; }
+  .node small { display: block; margin-top: 8px; font-family: var(--mono); font-size: 18px; color: var(--muted); }
+  .node.hot { border-color: var(--neon); box-shadow: 0 0 40px rgba(240,255,0,.18) inset; }
+  .node.round { border-radius: 50%; clip-path: none; display: grid; place-items: center; font-size: 46px; }
+  svg.wires { position: absolute; inset: 0; overflow: visible; }
+  svg.wires path { fill: none; stroke: var(--neon); stroke-width: 3; opacity: .85; }
+  svg.wires path.cy { stroke: var(--cyan); stroke-dasharray: 9 8; }
+  svg.wires text { font-family: "IBM Plex Mono", monospace; font-size: 19px; fill: var(--neon-hot); }
+
+  /* Flujo de confirmación */
+  .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 22px; margin-top: 10px; }
+  .step { position: relative; }
+  .step .n { font-family: var(--brand); font-size: 64px; color: var(--neon); text-shadow: 0 0 18px rgba(240,255,0,.45); }
+  .step .card { min-height: 360px; margin-top: 12px; }
+  .step .card p { font-size: 25px; }
+  .step .who { font-family: var(--mono); font-size: 19px; letter-spacing: .14em; color: var(--cyan); text-transform: uppercase; margin-bottom: 12px; }
+  .step.stop .card { border-color: var(--alert); }
+  .step.stop .who { color: var(--alert); }
+  .note { margin-top: 34px; font-size: 27px; color: #dfe8c0; }
+  .note b { color: var(--neon); }
+
+  /* Cifras */
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
+  .stat { text-align: left; }
+  .stat .v { font-family: var(--brand); font-weight: 900; font-size: 104px; color: var(--neon); text-shadow: 0 0 26px rgba(240,255,0,.45); line-height: 1; }
+  .stat .v small { font-size: 46px; margin-left: 6px; }
+  .stat .l { margin-top: 14px; font-size: 27px; color: #dfe8c0; line-height: 1.35; }
+
+  .shot { width: 100%; border: 1.5px solid var(--cyan-dim); box-shadow: 0 30px 80px rgba(0,0,0,.6), 0 0 60px rgba(240,255,0,.08); }
+  ul.clean { list-style: none; }
+  ul.clean li { padding-left: 34px; position: relative; margin-bottom: 14px; }
+  ul.clean li::before { content: "▸"; position: absolute; left: 0; color: var(--neon); }
+</style>
+</head>
+<body>
+
+<!-- 1. Portada -->
+<section class="slide cover">
+  <div class="bg"></div><div class="shade"></div>
+  <div class="inner">
+    <div class="kicker">Proyecto personal · Windows 11 · Español</div>
+    <h1>J.A.R.V.I.S.</h1>
+    <div class="sub">Un asistente de voz que <em>conversa</em> con Claude Sonnet y <em>hace</em> las tareas con Claude Code en segundo plano.</div>
+    <div class="meta">
+      <b>Nauzet Doreste</b> · 2.º ASIR + Máster en Ciberseguridad<br>
+      github.com/ndoreste/jarvis-claude-voice
+    </div>
+  </div>
+</section>
+
+<!-- 2. La idea -->
+<section class="slide">
+  <div class="kicker">La idea</div>
+  <h2>Hablar con el PC como con una persona… y que <em>lo haga</em>.</h2>
+  <div class="grid" style="grid-template-columns: repeat(3, 1fr);">
+    <div class="card"><h3>Manos libres</h3><p>«¿Qué dices, Jarvis?» y hablas. Sin teclado, sin ventanas, con el micro de los auriculares. Le puedes interrumpir mientras habla.</p></div>
+    <div class="card"><h3>Hace, no solo responde</h3><p>Lo que pides <b>hacer</b> lo encarga a Claude Code con todos tus MCP, conectores, skills y tu Chrome. Te avisa al terminar.</p></div>
+    <div class="card"><h3>Con tu suscripción</h3><p>La voz y las tareas usan tu plan de Claude Pro o Max. Ni un céntimo de API de pago por uso.</p></div>
+  </div>
+  <div class="footer"><span><b>Jarvis</b> · asistente de voz con Claude</span><span>02</span></div>
+</section>
+
+<!-- 3. Ejemplos -->
+<section class="slide">
+  <div class="kicker">Qué hace</div>
+  <h2>Le dices… y Jarvis…</h2>
+  <table class="ex">
+    <tr><td>«¿Qué dices, Jarvis? ¿Qué tengo mañana?»</td><td>Lee tu Google Calendar (solo lectura) y te lo cuenta en una frase.</td></tr>
+    <tr><td>«Organiza la carpeta de Descargas»</td><td>«Me pongo con ello». Claude Code lo hace en segundo plano y Jarvis te avisa.</td></tr>
+    <tr><td>«En el proyecto de LinkedIn, prepara el post de hoy»</td><td>La tarea arranca <b>dentro de esa carpeta</b>, con su CLAUDE.md, memoria y skills.</td></tr>
+    <tr><td>«Envía el correo a…»</td><td>Lo prepara y te pide permiso: <span class="mono">«¿Lo hago?»</span>. Sin tu «sí», no sale nada.</td></tr>
+  </table>
+  <div class="footer"><span><b>Jarvis</b> · asistente de voz con Claude</span><span>03</span></div>
+</section>
+
+<!-- 4. Arquitectura -->
+<section class="slide" id="arquitectura">
+  <div class="kicker">Cómo funciona</div>
+  <h2 style="margin-bottom: 30px;">Oído local, <em>cerebro</em> siempre caliente, <em>manos</em> en segundo plano.</h2>
+  <div class="diagram">
+    <svg class="wires" viewBox="0 0 1660 640">
+      <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#f0ff00"/></marker>
+            <marker id="c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#38bdf8"/></marker></defs>
+      <path d="M150 115 H220" marker-end="url(#a)"/>
+      <path d="M520 115 H590" marker-end="url(#a)"/>
+      <path d="M590 145 H520" marker-end="url(#a)" style="opacity:.0"/>
+      <path d="M960 115 H1030" marker-end="url(#a)"/>
+      <path d="M1360 115 H1430" marker-end="url(#a)"/>
+      <path d="M775 205 V330" marker-end="url(#a)"/>
+      <text x="790" y="275">encargar</text>
+      <path d="M690 205 C690 270 470 270 470 330" marker-end="url(#a)"/>
+      <text x="470" y="262">agenda</text>
+      <path d="M960 420 H1140" marker-end="url(#a)"/>
+      <text x="975" y="405">irreversible</text>
+      <path class="cy" d="M800 560 V605 H270 V235" marker-end="url(#c)"/>
+      <text x="300" y="595">al terminar: data/tareas/&lt;id&gt;.json → el oyente lo cuenta</text>
+    </svg>
+    <div class="node round" style="left:0; top:40px; width:150px; height:150px;">🎙️</div>
+    <div class="node" style="left:220px; top:15px; width:300px; height:220px;"><b>OÍDO · LOCAL</b><span>«¿Qué dices, Jarvis?» Whisper local + openWakeWord</span><small>bin/escucha.py</small></div>
+    <div class="node hot" style="left:590px; top:25px; width:370px; height:180px;"><b>CEREBRO</b><span>Sonnet · <code>claude -p</code> siempre abierto</span><small>sin MCP · 3 herramientas</small></div>
+    <div class="node" style="left:1030px; top:25px; width:330px; height:180px;"><b>VOZ</b><span>ElevenLabs, frase a frase</span><small>voz de Windows de reserva</small></div>
+    <div class="node round" style="left:1430px; top:40px; width:150px; height:150px;">🔊</div>
+    <div class="node" style="left:330px; top:330px; width:280px; height:140px;"><b>AGENDA</b><span>Google Calendar</span><small>calendar.readonly</small></div>
+    <div class="node hot" style="left:640px; top:330px; width:320px; height:230px;"><b>MANOS</b><span>Claude Code en 2.º plano</span><small>MCP · conectores · skills · Chrome · modo auto</small></div>
+    <div class="node" style="left:1150px; top:330px; width:430px; height:180px; border-color: rgba(255,46,64,.6);"><b style="color:#ff6b78">CONFIRMACIÓN</b><span>Enviar, publicar, pagar o borrar: «¿Lo hago?»</span><small>sesión reanudada solo con tu «sí»</small></div>
+  </div>
+  <div class="footer"><span><b>Jarvis</b> · asistente de voz con Claude</span><span>04</span></div>
+</section>
+
+<!-- 5. Confirmación -->
+<section class="slide">
+  <div class="kicker">Seguridad por diseño</div>
+  <h2>Una falsa activación <em>no puede</em> borrar nada.</h2>
+  <div class="flow">
+    <div class="step"><div class="n">01</div><div class="card"><div class="who">Tú</div><p>«Borra los PDF viejos de Descargas».</p></div></div>
+    <div class="step"><div class="n">02</div><div class="card"><div class="who">Claude Code</div><p>Lo prepara todo, pero no borra: termina con <code>CONFIRMAR:</code> borraré 12 PDF de 2024.</p></div></div>
+    <div class="step stop"><div class="n">03</div><div class="card"><div class="who">Jarvis</div><p>«Antes de seguir necesito tu permiso. Borraré 12 PDF de 2024. ¿Lo hago?»</p></div></div>
+    <div class="step"><div class="n">04</div><div class="card"><div class="who">Tú</div><p>«Sí». El script reanuda la <b>misma sesión</b> con una marca que solo él puede poner.</p></div></div>
+    <div class="step"><div class="n">05</div><div class="card"><div class="who">Jarvis</div><p>«Ya está. He borrado 12 PDF».</p></div></div>
+  </div>
+  <p class="note">El script solo acepta un «sí» para un permiso que Jarvis <b>ya te ha preguntado</b>, de esa sesión, reciente y <b>de un solo uso</b>: una web con una inyección de prompt no puede pedir una acción nueva «ya confirmada».</p>
+  <div class="footer"><span><b>Jarvis</b> · asistente de voz con Claude</span><span>05</span></div>
+</section>
+
+<!-- 6. Seguridad y privacidad -->
+<section class="slide">
+  <div class="kicker">Privacidad y mínimo privilegio</div>
+  <h2>Pensado por alguien que estudia <em>ciberseguridad</em>.</h2>
+  <div class="grid" style="grid-template-columns: repeat(3, 1fr);">
+    <div class="card"><h3>Audio local</h3><p>Whisper corre en el PC. Lo que el micro oye sin «Jarvis» no se guarda: solo nº de palabras y volumen.</p></div>
+    <div class="card"><h3>Cerebro acotado</h3><p>El modelo de voz solo puede usar <code>agenda</code>, <code>encargar</code>, WebSearch y WebFetch. Todo lo demás se deniega.</p></div>
+    <div class="card"><h3>Sin API de pago</h3><p>Los procesos se lanzan sin <code>ANTHROPIC_API_KEY</code> ni Bedrock/Vertex: siempre la sesión de claude.ai.</p></div>
+    <div class="card"><h3>OAuth mínimo</h3><p>El conector de Google pedía Gmail con borrado, Drive y Contactos. Ahora: <code>calendar.readonly</code>.</p></div>
+    <div class="card"><h3>Solo localhost</h3><p>API y HUD en <code>127.0.0.1</code>. Apagar o reiniciar solo desde el origen del HUD, con 30 s para cancelar.</p></div>
+    <div class="card"><h3>Repo sin secretos</h3><p>Datos personales en <code>usuario.toml</code>, claves en variables de usuario y escáner de secretos antes de cada commit.</p></div>
+  </div>
+  <div class="footer"><span><b>Jarvis</b> · asistente de voz con Claude</span><span>06</span></div>
+</section>
+
+<!-- 7. HUD -->
+<section class="slide" style="padding-top: 90px;">
+  <div class="kicker">HUD</div>
+  <h2 style="margin: 16px 0 30px; font-size: 54px;">Escritorio holográfico con datos <em>reales</em> del PC y el estado del oyente.</h2>
+  <img class="shot" src="../assets/img/hud-escuchando.jpg" alt="HUD de Jarvis escuchando" style="width: 1380px;">
+  <div class="footer"><span><b>Jarvis</b> · asistente de voz con Claude</span><span>07</span></div>
+</section>
+
+<!-- 8. Ingeniería de audio -->
+<section class="slide">
+  <div class="kicker">Lo difícil no era la IA</div>
+  <h2>Los fallos de un asistente de voz son casi siempre <em>de audio</em>.</h2>
+  <div class="grid" style="grid-template-columns: 1fr 1fr;">
+    <div class="card"><h3>Síntoma → arreglo</h3>
+      <ul class="clean">
+        <li>No contestaba tras un silencio → los auriculares mandan <b>ceros</b>: umbral mínimo y 0,6 s de audio previo.</li>
+        <li>Perdía frases largas → troceo en ~6 s con 2 s de solape.</li>
+        <li>Respondía a medias → si la frase acaba en «que», «para»… espera 3 s.</li>
+        <li>Contestaba dos veces → <b>mutex</b> de instancia única.</li>
+      </ul></div>
+    <div class="card"><h3>Para sentirlo rápido</h3>
+      <ul class="clean">
+        <li>Voz <b>frase a frase</b> mientras el modelo sigue escribiendo.</li>
+        <li><b>Interrupción</b>: hablar ~0,4 s le calla y ese audio es tu turno.</li>
+        <li>Cerebro <b>siempre abierto</b>: sin arranque en frío por pregunta.</li>
+        <li>Hilo de 5 min: si vuelves a llamarle, sigue la conversación.</li>
+      </ul></div>
+  </div>
+  <div class="footer"><span><b>Jarvis</b> · asistente de voz con Claude</span><span>08</span></div>
+</section>
+
+<!-- 9. Cifras -->
+<section class="slide">
+  <div class="kicker">En uso diario desde el 06/11/2026</div>
+  <h2>Algunas cifras reales del registro.</h2>
+  <div class="stats">
+    <div class="stat card"><div class="v">0,5<small>s</small></div><div class="l">desde que tiene la primera frase hasta que suena (mediana de 40 respuestas)</div></div>
+    <div class="stat card"><div class="v">30<small>s</small></div><div class="l">mediana de una tarea en el PC con Claude Code (28 tareas)</div></div>
+    <div class="stat card"><div class="v">0<small>€</small></div><div class="l">de API de pago por uso: voz y tareas con la suscripción</div></div>
+    <div class="stat card"><div class="v">5<small>min</small></div><div class="l">como mucho para que el vigilante levante un servicio caído</div></div>
+    <div class="stat card"><div class="v">13</div><div class="l">incidencias documentadas con síntoma, causa y arreglo</div></div>
+    <div class="stat card"><div class="v">~2<small>min</small></div><div class="l">desde encender el PC hasta poder decir «¿Qué dices, Jarvis?»</div></div>
+  </div>
+  <div class="footer"><span><b>Jarvis</b> · asistente de voz con Claude</span><span>09</span></div>
+</section>
+
+<!-- 10. Instalación y stack -->
+<section class="slide">
+  <div class="kicker">Pruébalo</div>
+  <h2>Código abierto, con guía <em>paso a paso</em>.</h2>
+  <div class="grid" style="grid-template-columns: 1.15fr 1fr;">
+    <div class="card"><h3>Instalación (≈ 45–60 min)</h3>
+      <ul class="clean">
+        <li>Claude Code con tu suscripción Pro o Max</li>
+        <li>OpenJarvis en la versión probada + <code>aplicar-overlay.ps1</code></li>
+        <li><code>uv sync</code>, openWakeWord y <code>npm install</code></li>
+        <li>Tu nombre y ciudad en <code>data/usuario.toml</code></li>
+        <li>Claves, arranque automático y vigilante</li>
+      </ul>
+      <p style="margin-top: 18px;" class="mono">docs/INSTALACION.md</p></div>
+    <div class="card"><h3>Stack</h3>
+      <div style="margin-top: 6px;">
+        <span class="tag">Python 3.11</span><span class="tag">Claude Code</span><span class="tag">Sonnet</span>
+        <span class="tag">openWakeWord</span><span class="tag">faster-whisper</span><span class="tag">ElevenLabs</span>
+        <span class="tag">OpenJarvis</span><span class="tag">FastAPI</span><span class="tag">React + Vite</span>
+        <span class="tag">TypeScript</span><span class="tag">PowerShell</span><span class="tag">Google Calendar API</span>
+      </div>
+      <p style="margin-top: 26px; font-size: 30px;"><b style="color: var(--neon)">github.com/ndoreste/<br>jarvis-claude-voice</b></p></div>
+  </div>
+  <div class="footer"><span><b>Nauzet Doreste</b> · @ndoreste</span><span>10</span></div>
+</section>
+
+</body>
+</html>

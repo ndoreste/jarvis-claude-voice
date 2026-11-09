@@ -1,0 +1,42 @@
+# Configuración de OpenJarvis para Jarvis. Cópiala a <jarvis>\data\config.toml.
+# Referencia completa: jarvis init --full
+
+# Motor de reserva: si el cerebro de voz (Sonnet por la suscripción) falla, la API de
+# OpenJarvis contesta con este modelo por OpenRouter (clave en OPENROUTER_API_KEY).
+[engine]
+default = "cloud"
+
+[engine.ollama]
+# Opcional: reserva local sin conexión (jarvis ask -e ollama -m qwen3.5:2b "pregunta")
+host = "http://127.0.0.1:11434"
+
+[intelligence]
+default_model = "openrouter/anthropic/claude-haiku-5.5"
+provider = "openrouter"
+
+[agent]
+default_agent = "simple"
+
+[tools]
+# agenda_google: Google Calendar en solo lectura (opcional, ver docs/INSTALACION.md)
+# encargar_a_claude: las acciones en el PC las hace Claude Code en segundo plano.
+# No se activan shell_exec ni code_interpreter: ejecutan comandos sin lista de permitidos.
+enabled = ["web_search", "file_read", "agenda_google", "encargar_a_claude"]
+
+[speech]
+# Reconocimiento de voz local (el audio no sale del PC)
+backend = "faster-whisper"
+model = "base"          # ~0,6 s por frase en CPU; "small" es más preciso pero ~3 veces más lento
+language = "es"
+device = "cpu"
+compute_type = "int8"
+# Voz de respuesta: ElevenLabs (clave en ELEVENLABS_API_KEY). Sin clave, la voz de Windows.
+tts_backend = "elevenlabs"
+voice_id = "<id-de-tu-voz-de-elevenlabs>"
+
+[security]
+profile = "personal"
+
+[analytics]
+enabled = false
+choice_recorded = true

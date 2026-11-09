@@ -1,0 +1,25 @@
+# Ajustes personales de Jarvis. Cópialo a <jarvis>\data\usuario.toml y rellénalo.
+# Lo leen bin\ajustes.py (oyente, cerebro de voz y tareas) y la API del HUD.
+
+# Cómo te llama Jarvis
+nombre = "Alex"
+
+# Quién eres, en una o dos frases: el cerebro de voz lo usa para tratarte con contexto
+perfil = """Alex, de Madrid; estudia administración de sistemas y le interesan Linux, \
+las redes y la automatización"""
+
+# Carpeta con tus proyectos de Claude Code. «¿Qué dices, Jarvis? En el proyecto de LinkedIn, …»
+# hace la tarea dentro de la subcarpeta que más se parezca a lo que digas.
+proyectos = "~/claudeProjects"
+
+# claude.exe nativo. Vacío: lo busca en el PATH, en ~/.local/bin y en %APPDATA%\npm.
+# Usa el .exe, no claude.cmd: el .cmd rompe las comillas del prompt de sistema.
+claude_exe = ''
+
+# Ciudad del tiempo que muestra el HUD (Open-Meteo, no necesita clave)
+[ciudad]
+nombre = "Madrid"
+zona = "España"
+latitud = 40.42
+longitud = -3.70
+zona_horaria = "Europe/Madrid"

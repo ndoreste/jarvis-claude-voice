@@ -1,0 +1,241 @@
+/* [Nau] HUD de Jarvis — escritorio holográfico en amarillo fluorescente.
+   Todo va dentro de .jarvis-hud para no afectar al resto de la web. */
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Chakra+Petch:wght@400;600&family=IBM+Plex+Mono:wght@400;500&family=Share+Tech+Mono&display=swap");
+
+.jarvis-hud {
+  --bg: #020302;
+  --bg-2: #0b0e04;
+  --neon: #f0ff00;
+  --neon-hot: #fdffd0;
+  --neon-dim: rgba(240, 255, 0, 0.42);
+  --neon-faint: rgba(240, 255, 0, 0.07);
+  --alert: #ff2e40;
+  --text: #f8ffd9;
+  --muted: #8e9a5c;
+  /* Cristal azulado de los paneles laterales (mismo cian que las partículas del fondo) */
+  --glass: 56, 189, 248;
+  --glass-top: rgba(14, 42, 76, .74);
+  --glass-mid: rgba(8, 22, 46, .58);
+  --glass-low: rgba(12, 34, 64, .68);
+  --font-brand: "Orbitron", "Chakra Petch", "Segoe UI", sans-serif;
+  --font-display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --font-term: "Share Tech Mono", "Cascadia Mono", Consolas, monospace;
+  color-scheme: dark;
+  position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; z-index: 0;
+  /* Fondo como el de la web de CorGon: azul casi negro con partículas cian (HudBackground) */
+  background: #0a0d15;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 10px max(16px, env(safe-area-inset-right, 0px)) 14px max(16px, env(safe-area-inset-left, 0px));
+}
+.jarvis-hud *, .jarvis-hud *::before, .jarvis-hud *::after { box-sizing: border-box; }
+/* Encima de las partículas, como en CorGon: degradado que funde hacia abajo y rejilla de puntos cian */
+.jarvis-hud::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 1;
+  background:
+    linear-gradient(to bottom, rgba(10,13,21,.1), transparent 50%, #0a0d15),
+    radial-gradient(rgba(0,212,255,.06) 1px, transparent 1px) 0 0 / 24px 24px;
+}
+.jarvis-hud .hud-bg { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 0; }
+/* El HUD va por encima de las estrellas y de la viñeta */
+.jarvis-hud .hud-frame { position: relative; z-index: 2; }
+.jarvis-hud::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 5;
+  background: repeating-linear-gradient(to bottom, rgba(240,255,0,.025) 0 1px, transparent 1px 3px);
+  animation: hud-flicker 5s infinite steps(1);
+}
+@keyframes hud-flicker { 0%, 100% { opacity: 1; } 31% { opacity: .55; } 32% { opacity: 1; } 77% { opacity: .75; } 78% { opacity: 1; } }
+@keyframes hud-spin { to { transform: rotate(360deg); } }
+@keyframes hud-blink { 50% { opacity: .3; } }
+.jarvis-hud .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.jarvis-hud .hud { position: relative; z-index: 1; display: grid; gap: 14px 22px; min-height: 100%;
+  grid-template-columns: minmax(250px, 300px) minmax(0, 1fr) minmax(250px, 320px);
+  grid-template-areas: "ruler ruler ruler" "left center right" "dock dock dock";
+  grid-template-rows: auto 1fr auto;
+  animation: hud-jitter 7s infinite steps(1); }
+@keyframes hud-jitter {
+  0%, 100% { transform: none; }
+  61% { transform: translateX(2px) skewX(-0.5deg); }
+  61.7% { transform: translateX(-1px); }
+  62.2% { transform: none; }
+  88% { opacity: .9; } 88.6% { opacity: 1; }
+}
+
+/* Regla de días */
+.jarvis-hud .ruler { grid-area: ruler; display: flex; justify-content: space-between; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--neon-dim); overflow: hidden; }
+.jarvis-hud .ruler span { font-family: var(--font-brand); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2ch; text-align: center; text-shadow: 0 0 6px rgba(240,255,0,.4); }
+.jarvis-hud .ruler span.today { color: var(--bg); background: var(--neon); padding: 0 4px; box-shadow: 0 0 8px var(--neon), 0 0 26px var(--neon); text-shadow: none; }
+
+/* Cristal holográfico */
+.jarvis-hud .holo {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, var(--glass-top), var(--glass-mid) 60%, var(--glass-low)),
+    repeating-linear-gradient(to bottom, rgba(var(--glass), .05) 0 1px, transparent 1px 4px);
+  border: 1px solid rgba(var(--glass), .55);
+  box-shadow: inset 0 0 36px rgba(var(--glass), .14), inset 0 1px 0 rgba(var(--glass), .35);
+  clip-path: polygon(14px 0, calc(100% - 14px) 0, 100% 14px, 100% calc(100% - 14px), calc(100% - 14px) 100%, 14px 100%, 0 calc(100% - 14px), 0 14px);
+}
+.jarvis-hud .holo > * { position: relative; z-index: 1; }
+/* Barrido de brillo: se mueve con transform (lo compone la GPU sin repintar el panel) */
+.jarvis-hud .holo::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 260%; pointer-events: none;
+  background: linear-gradient(105deg, transparent 38%, rgba(125,211,252,.13) 50%, transparent 62%);
+  animation: hud-sheen 6.5s linear infinite; will-change: transform; }
+@keyframes hud-sheen { from { transform: translateX(-98.5%); } to { transform: translateX(67.7%); } }
+.jarvis-hud .label { font-family: var(--font-display); font-weight: 600; font-size: 11px; letter-spacing: .3em; text-transform: uppercase; color: var(--neon); text-shadow: 0 0 8px rgba(240,255,0,.55); }
+.jarvis-hud .code { font-size: 10px; color: var(--muted); letter-spacing: .15em; }
+.jarvis-hud .rule { height: 1px; background: linear-gradient(90deg, var(--neon), var(--neon-dim) 40%, transparent); box-shadow: 0 0 8px var(--neon); }
+.jarvis-hud .panel { min-width: 0; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.jarvis-hud .panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.jarvis-hud .side { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.jarvis-hud .side.left { grid-area: left; }
+.jarvis-hud .side.right { grid-area: right; }
+
+/* Anillo de fecha */
+.jarvis-hud .datering { position: relative; width: 210px; aspect-ratio: 1; align-self: center; }
+.jarvis-hud .datering svg { width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 2px var(--neon)) drop-shadow(0 0 10px rgba(240,255,0,.65)) drop-shadow(0 0 24px rgba(240,255,0,.25)); }
+.jarvis-hud .datering .datering-spin { position: absolute; inset: 0; filter: drop-shadow(0 0 4px rgba(240,255,0,.6)); animation: hud-spin 20s linear infinite; will-change: transform; }
+.jarvis-hud .datering .inner { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 2px; }
+.jarvis-hud .datering .month { font-family: var(--font-display); font-size: 15px; letter-spacing: .2em; text-transform: capitalize; }
+.jarvis-hud .datering .day { font-family: var(--font-brand); font-weight: 900; font-size: 54px; line-height: 1; color: var(--neon); text-shadow: 0 0 6px #fff, 0 0 18px var(--neon), 0 0 42px var(--neon); }
+.jarvis-hud .datering .wd { font-size: 11px; letter-spacing: .2em; color: var(--muted); text-transform: uppercase; }
+.jarvis-hud .datering .time { font-family: var(--font-brand); font-size: 16px; color: var(--neon-hot); font-variant-numeric: tabular-nums; }
+.jarvis-hud .datering .time small { font-size: 10px; color: var(--muted); }
+
+/* Medidores y listas */
+.jarvis-hud .meter-row { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; font-size: 12px; }
+.jarvis-hud .meter-row .k { color: var(--muted); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
+.jarvis-hud .meter-row .v { text-align: right; font-variant-numeric: tabular-nums; text-shadow: 0 0 6px rgba(240,255,0,.55); }
+.jarvis-hud .bar { grid-column: 1 / -1; height: 7px; background: rgba(240,255,0,.08); border: 1px solid var(--neon-dim); position: relative; }
+.jarvis-hud .bar i { position: absolute; inset: 1px auto 1px 1px; background: repeating-linear-gradient(90deg, var(--neon) 0 6px, transparent 6px 8px);
+  box-shadow: 0 0 6px var(--neon), 0 0 16px var(--neon); transition: width .6s ease; }
+.jarvis-hud .bar.alert i { background: repeating-linear-gradient(90deg, var(--alert) 0 6px, transparent 6px 8px); box-shadow: 0 0 8px var(--alert); }
+.jarvis-hud .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 12px; margin: 0; }
+.jarvis-hud .kv dt { color: var(--muted); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; align-self: center; }
+.jarvis-hud .kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; text-shadow: 0 0 6px rgba(240,255,0,.55); overflow-wrap: anywhere; }
+.jarvis-hud .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--neon); box-shadow: 0 0 8px var(--neon); margin-right: 6px; animation: hud-blink 1.6s infinite; }
+.jarvis-hud .dot.off { background: var(--alert); box-shadow: 0 0 8px var(--alert); }
+.jarvis-hud .actions { display: grid; gap: 6px; }
+.jarvis-hud .confirm { display: grid; gap: 6px; font-size: 12px; color: var(--neon-hot); }
+.jarvis-hud .confirm .row { display: flex; gap: 6px; flex-wrap: wrap; }
+.jarvis-hud .ask { display: flex; gap: 6px; }
+.jarvis-hud .ask input { flex: 1; min-width: 0; font: inherit; color: var(--text); background: rgba(240,255,0,.04); border: 1px solid var(--neon-dim); padding: 8px 10px; }
+.jarvis-hud .ask input::placeholder { color: var(--muted); }
+.jarvis-hud .ask input:focus { outline: 1px solid var(--neon); box-shadow: 0 0 12px var(--neon-dim); }
+
+/* Tiempo */
+.jarvis-hud .weather { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+.jarvis-hud .weather .place { font-family: var(--font-display); font-size: 14px; letter-spacing: .08em; text-shadow: 0 0 6px rgba(240,255,0,.55); }
+.jarvis-hud .weather .sky { color: var(--muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+
+/* Ficha tipo fastfetch */
+.jarvis-hud .info { min-width: 0; display: grid; gap: 2px; font-size: 11px; line-height: 1.45; text-shadow: 0 0 6px rgba(240,255,0,.4); }
+.jarvis-hud .info .who { color: var(--neon); font-weight: 500; }
+.jarvis-hud .info .sep { color: var(--neon-dim); overflow: hidden; white-space: nowrap; }
+.jarvis-hud .info .row { overflow-wrap: anywhere; }
+.jarvis-hud .info .k { color: var(--neon); }
+.jarvis-hud .info .k::after { content: ": "; color: var(--muted); }
+.jarvis-hud .swatches { display: flex; margin-top: 4px; }
+.jarvis-hud .swatches i { width: 20px; height: 10px; }
+@keyframes hud-type { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+
+/* Tarjetas laterales como terminales: letra de terminal, títulos como comando (>_) y cada
+   línea aparece tecleada de izquierda a derecha (el retraso de cada una lo pone useTerminalTyping) */
+.jarvis-hud .side .panel, .jarvis-hud .side .panel .label, .jarvis-hud .side .panel .code,
+.jarvis-hud .side .panel .place, .jarvis-hud .side .panel button { font-family: var(--font-term); }
+.jarvis-hud .side .panel .label, .jarvis-hud .side .panel .place { letter-spacing: .14em; font-weight: 400; }
+.jarvis-hud .side .panel .label { font-size: 13px; }
+.jarvis-hud .side .panel .place { letter-spacing: .04em; white-space: nowrap; }
+.jarvis-hud .side .panel .label::before, .jarvis-hud .side .panel .place::before { content: ">_ "; letter-spacing: 0; opacity: .85; }
+.jarvis-hud .side .panel .meter-row, .jarvis-hud .side .panel .kv, .jarvis-hud .side .panel .info { font-size: 12.5px; }
+.jarvis-hud .side .panel .meter-row .k, .jarvis-hud .side .panel .kv dt { font-size: 11px; letter-spacing: .08em; }
+.jarvis-hud .side .panel .type-line { animation: hud-type .45s steps(22) both; }
+.jarvis-hud .prompt { font-size: 11px; }
+.jarvis-hud .prompt .ps { color: var(--neon); }
+.jarvis-hud .prompt .path { color: var(--muted); }
+.jarvis-hud .cursor { display: inline-block; width: 7px; height: 12px; vertical-align: -2px; background: var(--neon); box-shadow: 0 0 8px var(--neon); animation: hud-blink 1s steps(1) infinite; }
+
+/* Centro */
+.jarvis-hud .center { grid-area: center; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.jarvis-hud .hud-title { font-family: var(--font-brand); font-weight: 900; font-size: clamp(24px, 3vw, 40px); letter-spacing: .32em; padding-left: .32em; margin: 0;
+  color: transparent; -webkit-text-stroke: 2px var(--neon); text-shadow: 0 0 8px var(--neon), 0 0 26px rgba(240,255,0,.75), 0 0 60px rgba(240,255,0,.4); }
+.jarvis-hud .subtitle { font-family: var(--font-display); font-size: 11px; letter-spacing: .4em; color: var(--muted); text-transform: uppercase; padding-left: .4em; }
+.jarvis-hud .stage { display: grid; grid-template-columns: auto minmax(240px, 430px) auto; align-items: center; justify-content: center; gap: 6px; width: 100%; }
+.jarvis-hud .core-wrap { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+/* El holograma se encoge en pantallas bajas (1920×1080 al 125 % = 1536×864) para que quepa todo sin desplazar */
+.jarvis-hud canvas.core { width: 100%; max-width: min(430px, calc((var(--frame-h, 100vh) - 400px) * 0.75)); min-width: 240px; aspect-ratio: 3 / 4; display: block; }
+.jarvis-hud .caption { color: var(--muted); font-size: 12px; text-align: center; max-width: 60ch; min-height: 2.9em; line-height: 1.45; text-shadow: 0 0 6px rgba(240,255,0,.45); }
+.jarvis-hud .caption.speaking { color: var(--neon-hot); }
+.jarvis-hud .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
+/* Círculos */
+.jarvis-hud .hud-col { display: flex; flex-direction: column; gap: 14px; }
+.jarvis-hud .hud-col.left .hg:nth-child(2) { transform: translateX(-22px); }
+.jarvis-hud .hud-col.right .hg:nth-child(2) { transform: translateX(22px); }
+.jarvis-hud .hg { --hg-size: 112px; position: relative; width: var(--hg-size); display: grid; justify-items: center; gap: 2px; }
+.jarvis-hud .hg svg { width: var(--hg-size); height: var(--hg-size); overflow: visible; filter: drop-shadow(0 0 2px var(--neon)) drop-shadow(0 0 10px rgba(240,255,0,.65)) drop-shadow(0 0 24px rgba(240,255,0,.25)); }
+.jarvis-hud .hg .ring-out { fill: none; stroke: var(--neon-dim); stroke-width: 1; }
+.jarvis-hud .hg .ticks { fill: none; stroke: var(--neon); stroke-width: 4; stroke-dasharray: 1 5.2; opacity: .45; }
+.jarvis-hud .hg .track { fill: none; stroke: rgba(240,255,0,.1); stroke-width: 7; }
+.jarvis-hud .hg .bar-arc { fill: none; stroke: var(--neon); stroke-width: 7; transition: stroke-dasharray .6s ease, stroke .3s; }
+.jarvis-hud .hg.alert .bar-arc { stroke: var(--alert); }
+.jarvis-hud .hg.alert svg { filter: drop-shadow(0 0 3px var(--alert)) drop-shadow(0 0 12px rgba(255,46,64,.6)); }
+.jarvis-hud .hg .spin { fill: none; stroke: var(--neon); stroke-width: 1.2; stroke-dasharray: 5 7; opacity: .7; }
+/* Capa del anillo giratorio: un solo brillo, rasterizado una vez y girado por la GPU */
+.jarvis-hud .hg .hg-spin { position: absolute; top: 0; left: 0; filter: drop-shadow(0 0 4px rgba(240,255,0,.6)); animation: hud-spin 9s linear infinite; will-change: transform; }
+.jarvis-hud .hg.alert .hg-spin { filter: drop-shadow(0 0 4px rgba(255,46,64,.6)); }
+.jarvis-hud .hg:nth-child(even) .hg-spin { animation-direction: reverse; animation-duration: 13s; }
+.jarvis-hud .hg .val { font-family: var(--font-brand); font-weight: 700; font-size: 19px; fill: var(--neon-hot); text-anchor: middle; dominant-baseline: middle; }
+.jarvis-hud .hg .unit { font-family: var(--font-mono); font-size: 9px; fill: var(--muted); text-anchor: middle; letter-spacing: .12em; }
+.jarvis-hud .hg .name { font-family: var(--font-display); font-weight: 600; font-size: 11px; letter-spacing: .24em; text-transform: uppercase; color: var(--neon); text-shadow: 0 0 8px rgba(240,255,0,.55); padding-left: .24em; }
+.jarvis-hud .hg .sub { font-size: 10px; color: var(--muted); text-align: center; max-width: 112px; overflow-wrap: anywhere; min-height: 1.2em; }
+.jarvis-hud .dock { grid-area: dock; display: flex; flex-wrap: wrap; justify-content: space-around; gap: 14px; padding-top: 12px; border-top: 1px solid var(--neon-dim); }
+
+/* Botones */
+.jarvis-hud button, .jarvis-hud a.btn { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-display); font-weight: 600; font-size: 11px; letter-spacing: .22em; text-transform: uppercase; color: var(--neon);
+  background: rgba(240,255,0,.04); border: 1px solid var(--neon-dim); padding: 8px 16px; cursor: pointer; text-decoration: none;
+  clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 8px 100%, 0 50%); }
+.jarvis-hud button:hover, .jarvis-hud a.btn:hover { background: rgba(240,255,0,.12); }
+.jarvis-hud button.danger { color: var(--alert); border-color: rgba(255,46,64,.6); }
+.jarvis-hud button:disabled { opacity: .5; cursor: default; }
+.jarvis-hud button:focus-visible, .jarvis-hud a.btn:focus-visible { outline: 2px solid var(--neon); outline-offset: 2px; }
+
+/* Capas de holograma de toda la pantalla */
+.jarvis-hud .scanband { position: fixed; left: 0; right: 0; top: -20vh; height: 18vh; pointer-events: none; z-index: 6;
+  background: linear-gradient(to bottom, transparent, rgba(240,255,0,.07) 45%, rgba(253,255,208,.12) 50%, rgba(240,255,0,.07) 55%, transparent);
+  animation: hud-scanband 7s linear infinite; will-change: transform; }
+@keyframes hud-scanband { to { transform: translateY(140vh); } }
+.jarvis-hud .grain { position: fixed; inset: -10%; pointer-events: none; z-index: 6; opacity: .07; will-change: transform;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .94 0 0 0 0 1 0 0 0 0 0 0 0 0 1.4 -.4'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation: hud-grain .5s steps(4) infinite; }
+@keyframes hud-grain { 0% { transform: translate(0, 0); } 25% { transform: translate(-6%, 4%); } 50% { transform: translate(5%, -3%); } 75% { transform: translate(-3%, -6%); } }
+
+/* Ajuste a pantalla (useFitToScreen): el HUD se maqueta sobre un lienzo de 1536×864 o más
+   y se escala para llenar la ventana entera, sin desplazar ni cortar nada */
+.jarvis-hud.fit { padding: 0; overflow: hidden; }
+.jarvis-hud.fit .hud-frame { position: absolute; top: 0; left: 0; transform-origin: 0 0; padding: 10px 16px 14px; }
+.jarvis-hud.fit .hud { height: 100%; min-height: 0; gap: 10px 22px; }
+.jarvis-hud.fit .hud-title { font-size: 40px; }
+.jarvis-hud.fit .side { gap: 10px; }
+.jarvis-hud.fit .datering { width: 166px; }
+.jarvis-hud.fit .datering .day { font-size: 42px; }
+.jarvis-hud.fit .datering .month { font-size: 13px; }
+.jarvis-hud.fit .panel { padding: 10px 14px; gap: 7px; }
+.jarvis-hud.fit .kv { gap: 4px 12px; }
+.jarvis-hud.fit .actions { gap: 4px; }
+.jarvis-hud.fit .actions button { padding-block: 6px; }
+.jarvis-hud.fit .info { line-height: 1.32; }
+.jarvis-hud.fit .hg { --hg-size: 96px; }
+.jarvis-hud.fit .dock { padding-top: 8px; }
+@media (max-width: 760px) {
+  .jarvis-hud .hud { grid-template-columns: minmax(0, 1fr); grid-template-areas: "ruler" "center" "dock" "left" "right"; }
+  .jarvis-hud .stage { grid-template-columns: minmax(0, 1fr); }
+  .jarvis-hud .hud-col { flex-direction: row; flex-wrap: wrap; justify-content: center; }
+  .jarvis-hud .hud-col .hg { transform: none !important; }
+  .jarvis-hud .ruler span:not(.near) { display: none; }
+  .jarvis-hud .ruler { justify-content: center; gap: 10px; }
+}

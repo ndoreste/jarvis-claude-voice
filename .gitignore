@@ -1,0 +1,41 @@
+# Datos de la instalación: configuración, claves, memoria y registros (nunca al repo)
+data/
+*.log
+*.jsonl
+*.db
+*.db-shm
+*.db-wal
+usuario.toml
+!config/usuario.example.toml
+config.toml
+!config/config.example.toml
+
+# Secretos
+.env
+.env.*
+!env.example
+*.pem
+*.key
+*token*
+*secret*
+credentials*.json
+client_secret*.json
+# El escáner de secretos sí se versiona
+!scripts/check-secrets.mjs
+
+# Audio de pruebas
+*.wav
+*.mp3
+
+# Cachés
+__pycache__/
+*.pyc
+node_modules/
+.cache/
+*.tsbuildinfo
+
+# SO y editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

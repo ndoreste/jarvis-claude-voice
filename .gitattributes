@@ -1,0 +1,10 @@
+* text=auto
+*.ps1 text eol=crlf
+*.vbs text eol=crlf
+*.cmd text eol=crlf
+bin/jarvis-herramienta text eol=lf
+*.sh text eol=lf
+*.patch text eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary

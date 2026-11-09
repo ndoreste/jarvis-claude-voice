@@ -1,0 +1,5 @@
+#!/bin/sh
+# [Nau] Única orden que puede ejecutar el cerebro de voz de Jarvis (ver herramientas_voz.py)
+DIR="$(cd "$(dirname "$0")" && pwd)"
+export OPENJARVIS_HOME="$(cygpath -m "$DIR/../data" 2>/dev/null || echo "$DIR/../data")"
+exec "$DIR/../src/.venv/Scripts/python.exe" "$DIR/herramientas_voz.py" "$@"
