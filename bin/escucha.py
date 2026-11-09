@@ -154,9 +154,24 @@ SEGMENT_OVERLAP_FRAMES = 25  # ~2 s que se repiten en el trozo siguiente
 DIGITAL_SILENCE_RMS = 1e-4
 LEVEL_LOG_EVERY_S = 120
 NAME_SIMILARITY = 0.6
+# [Nau] Para que cuente como llamada, «Jarvis» va entre las 3 primeras palabras de
+# la frase o la frase tiene como mucho 4 palabras (si no, habla de él, no le llama)
+NAME_MAX_POSITION = 3
+CALL_MAX_WORDS = 4
+BARE_NAME_MAX_S = 3.0  # un «Jarvis» dicho solo dura ~2 s con el preroll y la pausa final
 GREETINGS = {"hola", "oye", "hey", "ey", "vale", "buenas", "buenos", "dias"}
 # «¿Qué dices, Jarvis?» (y como lo escribe Whisper: «dice», «dises»…) solo le llama
-CALL_WORDS = {"dices", "dice", "dises", "dise", "decis"}
+CALL_WORDS = {"dices", "dice", "dises", "dise", "decis", "pasa"}
+# [Nau] 09/11/2026: saludos y muletillas que pueden ir antes del nombre sin que deje de ser una llamada
+LEAD_WORDS = GREETINGS | CALL_WORDS | {
+    "que", "pasa", "tal", "eh", "venga", "bueno", "pues", "tardes", "noches", "oiga", "mira", "a", "y",
+}
+# Frases que solo comprueban si está («Jarvis, ¿estás por ahí?»): se contestan con el saludo fijo
+PRESENCE_CHECK = re.compile(
+    r"(?:(?:que|y) )?(?:que pasa|que tal|despierta|"
+    r"(?:estas|esta|estais|estan) (?:por ahi|ahi|despierto|despiertos|disponible)|"
+    r"me (?:oyes|escuchas|oye|escucha))"
+)
 CALL_REPLY = f"Hola {USUARIO}, aquí estoy como siempre, ¿en qué puedo ayudarte?"
 # Palabras con las que una frase no suele acabar: si termina así, el usuario sigue hablando
 UNFINISHED_ENDINGS = {
@@ -806,7 +821,8 @@ def is_jarvis(word: str) -> bool:
     if WAKE_NAME_WORD.fullmatch(w):
         return True
     # Esqueleto fonético: «Hierbis», «Gervis», «Yarbis»… suenan igual que «Jarvis».
-    if w.endswith(("is", "ys")) and _consonant_skeleton(w) in ("jrbs", "jbs"):
+    # [Nau] 09/11/2026: sin «jbs», que dejaba pasar «habéis» («Javis» ya está en WAKE_NAME_WORD).
+    if w.endswith(("is", "ys")) and _consonant_skeleton(w) == "jrbs":
         return True
     # Parecido fonético: 5-7 letras, acaba en -is/-ys y se parece a «jarvis».
     return (
@@ -816,10 +832,33 @@ def is_jarvis(word: str) -> bool:
     )
 
 
+def _calls_him(text: str, hit: re.Match) -> bool:
+    """[Nau] 09/11/2026: ¿le llama o solo habla de él? Cuenta si el nombre va al
+    principio de la frase («Hola Jarvis, …», «Jarvis, mira…») o la frase es corta
+    («¿Qué dices, Jarvis?»). «…lo guarde en la memoria de este Jarvis» no cuenta."""
+    start = max((m.end() for m in re.finditer(r"[.?!¿¡…;]", text[:hit.start()])), default=0)
+    end = re.search(r"[.?!¿¡…;]", text[hit.end():])
+    clause = text[start:hit.end() + (end.start() if end else len(text))]
+    words = re.findall(r"[\w']+", clause)
+    # «Oye, bueno, ¿qué pasa, Jarvis?»: los saludos y muletillas del principio no cuentan
+    before = re.findall(r"[\w']+", text[start:hit.start()])
+    while before and _plain(before[0]) in LEAD_WORDS:
+        before.pop(0)
+    return len(before) < NAME_MAX_POSITION or len(words) <= CALL_MAX_WORDS
+
+
 def wake_by_name(text: str) -> str | None:
-    """Si la frase nombra a Jarvis devuelve la pregunta ('' si solo le llama)."""
+    """Si la frase llama a Jarvis devuelve la pregunta ('' si solo le llama)."""
+    question = _question_after_name(text)
+    # [Nau] «Jarvis, ¿estás por ahí?», «¿Qué pasa, Jarvis?»: solo le llama → saludo fijo
+    if question and PRESENCE_CHECK.fullmatch(_plain(question).strip(" ,.;:!?¡¿")):
+        return ""
+    return question
+
+
+def _question_after_name(text: str) -> str | None:
     words = list(re.finditer(r"[\w']+", text))
-    hit = next((m for m in words if is_jarvis(m.group())), None)
+    hit = next((m for m in words if is_jarvis(m.group()) and _calls_him(text, m)), None)
     if hit is None:
         return None
     rest = text[hit.end():].strip(" ,.;:!?¡¿")
@@ -913,7 +952,7 @@ def listen(stream: Microphone, wake: Model, model_name: str) -> None:
     last_sound = time.monotonic()
     deaf_until = 0.0  # [Nau] hasta cuándo se ignora lo oído por un dictado de Escriba
     last_task_check = time.monotonic()
-    log.info("Escuchando «¿Qué dices, Jarvis?» / «Hey Jarvis» (cerebro Sonnet; reserva %s)", model_name)
+    log.info("Escuchando su nombre («Hola Jarvis», «¿Qué pasa, Jarvis?»…) / «Hey Jarvis» (cerebro Sonnet; reserva %s)", model_name)
     publish("idle", "")
     while True:
         frame = read_frame(stream)
@@ -954,6 +993,12 @@ def listen(stream: Microphone, wake: Model, model_name: str) -> None:
                 log.exception("No se pudo transcribir una frase")
                 heard = ""
             question = wake_by_name(heard) if useful(heard) else None
+            # [Nau] 09/11/2026: un «Jarvis» suelto sacado de varios segundos de audio
+            # (un vídeo, un directo) es Whisper rellenando con la palabra clave, no una llamada
+            seconds = len(segment) / SAMPLE_RATE
+            if question is not None and len(heard.split()) == 1 and seconds > BARE_NAME_MAX_S:
+                log.info("«Jarvis» suelto en %.1f s de audio: lo ignoro", seconds)
+                question = None
             if question is not None:
                 log.info("Activado por nombre: %r", heard)
             else:

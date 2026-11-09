@@ -12,7 +12,7 @@ import { useFitToScreen } from '@/components/Hud/useFitToScreen';
 import '@/components/Hud/hud.css';
 
 const VOICE_MODEL = 'openrouter/anthropic/claude-haiku-5.5';
-const IDLE_CAPTION = 'Di «¿Qué dices, Jarvis?» para despertarlo.';
+const IDLE_CAPTION = 'Llámalo por su nombre: «Hola Jarvis», «¿Qué pasa, Jarvis?»…';
 const MIC_LEVEL_FULL = 0.1;  // nivel RMS que llena el círculo del micro
 
 function useNow(): Date {
