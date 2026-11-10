@@ -23,6 +23,8 @@ Este repositorio **no redistribuye OpenJarvis completo**. Solo incluye, en
 ## Modelos y servicios
 
 - **openWakeWord**: modelo `hey_jarvis_v0.1` (Apache 2.0). Se descarga al instalar el paquete.
+- **livekit** (Apache 2.0): solo se usa su `AudioProcessingModule`, la cancelación de eco AEC3 de
+  WebRTC (BSD). Se instala con `uv pip`; no se incluye en el repo.
 - **faster-whisper / Whisper**: MIT. Los pesos del modelo los descarga OpenJarvis.
 - **Claude Code**: herramienta de Anthropic que se usa con la cuenta de cada persona. No se
   incluye en el repo.

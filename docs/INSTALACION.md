@@ -118,13 +118,13 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ## 5. Dependencias de Python
 
-**Qué hacer.** Crea el entorno de Python de OpenJarvis con la API, la voz y los modelos en la nube, y añade openWakeWord (el oyente lo carga; «Hey Jarvis» viene apagado y se enciende con `WAKE_BY_HEY_JARVIS` en `escucha.py`):
+**Qué hacer.** Crea el entorno de Python de OpenJarvis con la API, la voz y los modelos en la nube, y añade openWakeWord y `livekit` (la cancelación de eco de WebRTC; el oyente carga openWakeWord; «Hey Jarvis» viene apagado y se enciende con `WAKE_BY_HEY_JARVIS` en `escucha.py`):
 
 ```powershell
 cd "$J\src"
 uv python install 3.11
 uv sync --python 3.11 --extra desktop --extra inference-cloud
-uv pip install openwakeword==0.6.0 scikit-learn
+uv pip install openwakeword==0.6.0 scikit-learn livekit==1.2.1
 .\.venv\Scripts\python.exe -c "from openwakeword.utils import download_models; download_models(['hey_jarvis'])"
 ```
 
@@ -139,10 +139,10 @@ uv run maturin develop -m rust/crates/openjarvis-python/Cargo.toml
 **Qué deberías ver.** Que `uv sync` termina sin errores rojos (tarda unos minutos la primera vez) y que la descarga de modelos acaba sin errores. Comprueba que todo carga:
 
 ```powershell
-.\.venv\Scripts\python.exe -c "import faster_whisper, openwakeword, sounddevice; print('ok')"
+.\.venv\Scripts\python.exe -c "import faster_whisper, openwakeword, sounddevice; from livekit import rtc; print('ok')"
 ```
 
-> ⚠️ `openwakeword` y `scikit-learn` no están en `pyproject.toml` de OpenJarvis. Si algún día haces `uv sync --exact`, se borran y hay que repetir esta línea.
+> ⚠️ `openwakeword`, `scikit-learn` y `livekit` no están en `pyproject.toml` de OpenJarvis. Si algún día haces `uv sync --exact`, se borran y hay que repetir esta línea.
 
 ## 6. Web del HUD
 

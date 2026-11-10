@@ -128,7 +128,7 @@ index 79a0849..5a8aeaf 100644
 +    const content = (override ?? input).trim();
      if (!content || streamState.isStreaming) return;
      if (!selectedModel) {
-       toast.error('Pick a model first (ÔîÿK)');
+       toast.error('Pick a model first (⌘K)');
 @@ -554,6 +608,10 @@ export function InputArea() {
      maxTokens,
    ]);
@@ -147,7 +147,7 @@ index 79a0849..5a8aeaf 100644
 -              onClick={sendMessage}
 +              onClick={() => sendMessage()}
                disabled={streamState.isStreaming || !input.trim() || modelLoading || !selectedModel}
-               title={selectedModel ? 'Send message' : 'Pick a model first (ÔîÿK)'}
+               title={selectedModel ? 'Send message' : 'Pick a model first (⌘K)'}
                className="p-2 rounded-xl transition-colors shrink-0 cursor-pointer disabled:opacity-30 disabled:cursor-default"
 diff --git a/frontend/src/components/Sidebar/ConversationList.tsx b/frontend/src/components/Sidebar/ConversationList.tsx
 index 515527f..2ad9871 100644
@@ -400,8 +400,8 @@ index 5418013..d59bf07 100644
 -            # treats a single quoted argument as a window title, not a URL.
 -            subprocess.run(["cmd", "/c", "start", "", url], check=False)
 +            # [Nau] os.startfile en vez de ``cmd /c start``: cmd corta la URL
-+            # en el primer ┬½&┬╗ y Google recib├¡a solo client_id (error 400,
-+            # ┬½Required parameter is missing: response_type┬╗).
++            # en el primer «&» y Google recibía solo client_id (error 400,
++            # «Required parameter is missing: response_type»).
 +            os.startfile(url)  # type: ignore[attr-defined]
              return
          except Exception:  # noqa: BLE001 - any spawn failure -> fall back
@@ -416,7 +416,7 @@ index a654776..8ac4c48 100644
          }
 +        # [Nau] Formato plano {id, name, arguments}, como el resto de motores:
 +        # los agentes leen tc["name"]; con el formato anidado el nombre llegaba
-+        # vac├¡o y OpenRouter devolv├¡a 400 al usar cualquier herramienta.
++        # vacío y OpenRouter devolvía 400 al usar cualquier herramienta.
          if getattr(choice.message, "tool_calls", None):
              result["tool_calls"] = [
                  {
@@ -492,12 +492,12 @@ index 8955fc5..2d9e6cc 100644
                      tmp.write(audio)
  
 -                kwargs = {}
-+                # Empuja a Whisper a escribir el nombre del asistente (┬½Hola Jarvis┬╗
-+                # sal├¡a como ┬½Hola ya Arbis┬╗); con ruido o silencio no lo inventa.
++                # Empuja a Whisper a escribir el nombre del asistente («Hola Jarvis»
++                # salía como «Hola ya Arbis»); con ruido o silencio no lo inventa.
 +                # vad_filter: el detector de voz (Silero) quita ruido, viento y silencios
-+                # antes de transcribir, as├¡ Whisper no se inventa frases con ellos.
-+                # [Nau] 09/11/2026: beam_size=1 (b├║squeda voraz): igual de preciso con frases
-+                # cortas y hasta 0,4 s m├ís r├ípido que el beam 5 por defecto con la CPU cargada.
++                # antes de transcribir, así Whisper no se inventa frases con ellos.
++                # [Nau] 09/11/2026: beam_size=1 (búsqueda voraz): igual de preciso con frases
++                # cortas y hasta 0,4 s más rápido que el beam 5 por defecto con la CPU cargada.
 +                kwargs = {"hotwords": HOTWORDS, "vad_filter": True, "beam_size": 1}
                  if language:
                      kwargs["language"] = language

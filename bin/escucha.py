@@ -1,11 +1,10 @@
 """Oyente manos libres de Jarvis.
 
-Escucha el micrófono en local y se activa de dos formas:
-  1. Frase en español con «Jarvis» («Hola Jarvis», «Oye Jarvis, ¿qué hora es?»):
-     cada frase corta se transcribe con el Whisper local de la API de Jarvis y se
-     busca el nombre. Si la pregunta va en la misma frase, responde directamente.
-  2. «Hey Jarvis» en inglés con openWakeWord.
-Si solo le llaman («¿Qué dices, Jarvis?») saluda con la frase fija; si la pregunta va
+Escucha el micrófono en local y se activa solo con «¿Qué pasa, Jarvis?» (o «¿Qué dices,
+Jarvis?», como suele escribirlo Whisper): cada frase corta se transcribe con el Whisper
+local de la API de Jarvis y se busca la llamada (_wake_hit). «Hey Jarvis» por openWakeWord
+está desactivado desde el 09/11/2026 (WAKE_BY_HEY_JARVIS = False).
+Si solo le llaman saluda con la frase fija; si la pregunta va
 en la misma frase, responde directamente. Espera a que el usuario termine (frases a medias o
 si sigue hablando mientras piensa) y reproduce la respuesta con ElevenLabs. Tras
 responder sigue escuchando (FOLLOW_UP_S) sin repetir el nombre, hasta que el usuario se calla
@@ -52,6 +51,7 @@ from ajustes import USUARIO
 from cerebro_claude import ClaudeBrain
 from escriba_activo import escriba_dictando
 from memoria_voz import RESUME_REQUEST, VoiceMemory
+from eco_aec import EchoCanceller
 from microfono import FRAME, SAMPLE_RATE, Microphone, MicUnavailable
 from respuesta import Answer, speech_chunks
 
@@ -114,6 +114,13 @@ ECHO_GAIN_START = 0.5  # cuánto eco llega por cada unidad de voz reproducida; s
 ECHO_GAIN_FILE = ROOT / "data" / "eco-aprendido.txt"
 ECHO_GAIN_RANGE = (0.02, 2.0)  # [Nau] mínimo 0,05 → 0,02: con cascos el eco es ~0,03 de lo que suena
 ECHO_LOUD = 0.03  # solo se aprende el eco de los trozos en los que Jarvis suena
+# [Nau] 10/11/2026: con la voz por el altavoz (BS9655) y el micro USB, el eco vuelve con
+# ~0,41 s de retraso y a ~0,5 del volumen que suena (medido): superaba el umbral y Jarvis se
+# cortaba solo a mitad de frase, y Whisper lo transcribía como frases sin sentido. Ahora el
+# micro pasa por la cancelación de eco (eco_aec.py, -17 dB) mientras Jarvis habla. Si aun así
+# el eco que queda es fuerte (eco esperado > umbral de voz con una frase normal, o sin AEC),
+# hablar no le corta: solo una orden de parar («para», «espera», «calla»…) que oiga Whisper.
+ECHO_STRONG_GAIN = 0.13  # 1,5 × 0,13 × 0,2 (voz fuerte de Jarvis) ≈ 0,04 = BARGE_IN_MIN_RMS
 # [Nau] 09/11/2026: «para» dura ~0,3 s y, con el altavoz Bluetooth sonando, apenas sobresale
 # del eco: por volumen no se distingue (simulado con el eco grabado). Mientras Jarvis habla,
 # Whisper escucha sin parar ventanas de ~1 s cada ~0,5 s; si oye una orden de parar que no
@@ -164,7 +171,8 @@ SALDO_REPLY = (
 )
 
 # Activación por nombre: variantes con las que Whisper suele escribir «Jarvis»
-# [Nau] 08/11/2026: es solo el RESPALDO. La activación normal es «Hey Jarvis» (openWakeWord).
+# [Nau] 09/11/2026: es la vía PRINCIPAL («¿Qué pasa, Jarvis?» por Whisper); «Hey Jarvis» está apagado.
+# Si el nombre falla, la salida es un modelo propio de openWakeWord, no más variantes.
 # No añadir más variantes: NAME_SIMILARITY ya cubre las parecidas (ver CLAUDE.md, «Activación»).
 WAKE_NAME_WORD = re.compile(
     r"\b(?:jarvis|yarvis|harvis|jarbis|yarbis|charvis|javis|jarvi|yarvi|garvis|harvey"
@@ -375,6 +383,7 @@ class EchoGuard:
 
 
 _echo = EchoGuard()
+_aec = EchoCanceller()
 
 
 def is_stop_order(heard: str, said: str) -> bool:
@@ -426,7 +435,7 @@ def watch_for_barge_in(stream: Microphone, floor: float | None, end: float,
     since_scan = 0
     index = 0
     while time.monotonic() < end:
-        frame = read_frame(stream)
+        frame = _aec.clean(read_frame(stream))  # [Nau] sin el eco de lo que está sonando
         recent.append(frame)
         scan.append(frame)
         since_scan += 1
@@ -435,15 +444,16 @@ def watch_for_barge_in(stream: Microphone, floor: float | None, end: float,
         played = max(float(window.max()) if window.size else 0.0, _echo.tail())
         index += 1
         threshold = _echo.threshold(played, base)
+        loud_room = _echo.gain >= ECHO_STRONG_GAIN  # [Nau] altavoz: su voz vuelve fuerte al micro
         votes.append(rms > threshold)
-        echoing.append(threshold > base)
-        if not votes[-1]:
+        echoing.append(loud_room or threshold > base)
+        if loud_room or not votes[-1]:
             _echo.learn(played, rms)
         if escriba_dictando():
             continue
         # [Nau] Con cascos el eco no cuenta (umbral = el del ruido): un «para» de ~0,25 s basta
         needed = BARGE_IN_FRAMES if any(echoing) else BARGE_IN_FRAMES_QUIET
-        if sum(votes) >= needed:
+        if not loud_room and sum(votes) >= needed:
             winsound.PlaySound(None, 0)
             level = float(np.median([frame_rms(f) for f in list(recent)[-len(votes):]]))
             log.info("El usuario interrumpe (nivel %.3f, umbral %.3f, eco %.2f): me callo y escucho",
@@ -473,6 +483,7 @@ def play_file(path: Path, stream: Microphone | None = None,
     end = time.monotonic() + wav_seconds(path) + PLAYBACK_MARGIN_S
     stream.drain()  # lo grabado antes de empezar a hablar no es una interrupción
     envelope = playback_envelope(path)
+    _aec.start(path)
     winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
     return watch_for_barge_in(stream, floor, end, envelope, said)
 
@@ -1234,7 +1245,7 @@ def main() -> None:
     if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
         log.info("Ya hay otro oyente en marcha; este se cierra")
         return
-    log.info("Oyente iniciado")
+    log.info("Oyente iniciado (cancelación de eco %s)", "activa" if _aec.available else "NO disponible")
     # Siempre encendido: cualquier fallo inesperado se registra y el oyente vuelve a empezar.
     while True:
         try:

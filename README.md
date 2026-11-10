@@ -60,7 +60,7 @@ Más detalle, con el flujo de confirmación y los procesos, en [docs/arquitectur
 ## Qué demuestra este proyecto
 
 - **Integración de sistemas en Windows**: procesos en segundo plano sin ventanas, una tarea programada que vigila los servicios, un mutex de instancia única, Job Objects para cerrar procesos hijos y la API PDH para medir la CPU igual que el Administrador de tareas.
-- **Audio en tiempo real**: detector de voz con suelo de ruido adaptable, búfer previo de 0,6 s, troceo con solape para frases largas, interrupción del usuario (*barge-in*) con cancelación de su propio eco (compara el micro con lo que está sonando y aprende cuánto eco llega) y cambio automático de micrófono.
+- **Audio en tiempo real**: detector de voz con suelo de ruido adaptable, búfer previo de 0,6 s, troceo con solape para frases largas, interrupción del usuario (*barge-in*) con cancelación de eco de verdad (AEC3 de WebRTC: resta del micro lo que está sonando, así funciona también con altavoz) y cambio automático de micrófono.
 - **Orquestación de LLM**: un modelo de voz rápido y siempre caliente, más agentes de trabajo aislados, con reanudación de sesiones y un hilo de conversación que dura 5 minutos.
 - **Seguridad por diseño**: confirmación humana para acciones irreversibles, mínimo privilegio para el cerebro de voz, OAuth de Google reducido a `calendar.readonly` y ningún dato personal en el código (todo va en `data/usuario.toml`).
 - **Operación**: un historial de incidencias real, con síntoma, causa y arreglo ([CHANGELOG.md](CHANGELOG.md)), y una guía de diagnóstico ([docs/solucion-de-problemas.md](docs/solucion-de-problemas.md)).
@@ -108,7 +108,7 @@ Resumen; el paso a paso completo, con lo que deberías ver en cada paso, está e
 
 ## Stack
 
-- **Python 3.11**: oyente y scripts. Usa `sounddevice`, `numpy`, `openwakeword` y `faster-whisper`.
+- **Python 3.11**: oyente y scripts. Usa `sounddevice`, `numpy`, `openwakeword`, `faster-whisper` y `livekit` (solo su cancelación de eco).
 - **Claude Code** (`claude -p`, *stream-json*, `--resume`, `--chrome`) con Sonnet por la suscripción.
 - **OpenJarvis**: API FastAPI, herramientas, conectores y web en React + Vite.
 - **TypeScript + Canvas**: HUD holográfico con datos reales del PC.

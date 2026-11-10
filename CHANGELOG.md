@@ -2,6 +2,19 @@
 
 Jarvis lo uso a diario desde el 06/11/2026. Este es el historial real de cambios e incidencias, con síntoma, causa y arreglo.
 
+## 2026-11-10
+
+### Añadido
+- **Cancelación de eco de verdad** (`bin/eco_aec.py`): mientras Jarvis habla, el micro pasa por la AEC3 de WebRTC (paquete `livekit`), que resta lo que está sonando. Con un altavoz Bluetooth, el eco llegaba 0,41 s tarde y a ~0,5 del volumen; con la AEC baja unas 7 veces (de 0,034 a 0,005). Si el paquete falta, el oyente sigue sin AEC y con altavoz solo le corta una orden de parar.
+
+### Cambiado
+- **El vigilante revisa cada 2 minutos** (antes, cada 5). Para aplicarlo, ejecuta `bin\instalar-vigilante.ps1` como archivo (`powershell -ExecutionPolicy Bypass -File …`), no pegando su contenido en la consola: las líneas acabadas en `` ` `` se rompen y `$PSScriptRoot` queda vacío.
+
+### Arreglado
+| Síntoma | Causa | Arreglo |
+|---|---|---|
+| Con la voz por el altavoz no terminaba las frases y contestaba a frases sin sentido («¿Qué pasa con la lágrima?») | Su voz volvía al micro tan fuerte como la del usuario; el eco aprendido venía bajo de usar cascos y Whisper transcribía el eco como frases inventadas | Cancelación de eco (ver arriba). Probado: una respuesta de 54 s sin cortes y un «para» que lo calla a la primera |
+
 ## 2026-11-09
 
 ### Añadido
