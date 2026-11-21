@@ -2,7 +2,7 @@
 # (también 3 minutos después de iniciar sesión).
 # 1. MCP huérfanos: cierra los servidores MCP (chrome-devtools, whatsapp, playwright,
 #    fal-ai, n8n) cuya sesión de Claude ya no existe.
-# 2. Modelo de Escriba: si su llama-server (~4 GB) lleva 30 min sin usar la CPU, lo cierra.
+# 2. Modelo de Escriba: si su llama-server (~4 GB) lleva 10 min sin usar la CPU, lo cierra.
 #    Escriba solo pierde ese modelo; la transcripción (Parakeet) no se toca.
 # 3. Temporales: una vez al día borra de %TEMP% lo que tenga más de 7 días.
 # Registro: ..\data\liberar-ram.log   Estado: ..\data\liberar-ram.json
@@ -12,7 +12,10 @@ $data = Join-Path (Split-Path -Parent $PSScriptRoot) 'data'
 $logFile = Join-Path $data 'liberar-ram.log'
 $stateFile = Join-Path $data 'liberar-ram.json'
 $MCP_PATTERN = 'chrome-devtools-mcp|whatsapp-mcp-ts|@playwright/mcp|fal-ai-mcp-server|fal-mcp-server|n8n-mcp'
-$ESCRIBA_IDLE_MINUTES = 30
+# [Nau] 20/11/2026: el servidor compartido de WhatsApp (tarea "WhatsApp MCP compartido")
+# no cuelga de ninguna sesion de Claude a proposito: no es un huerfano, no se cierra.
+$MCP_KEEP_PATTERN = '--compartido'
+$ESCRIBA_IDLE_MINUTES = 10
 $TEMP_MAX_AGE_DAYS = 7
 
 function Write-Log([string]$message) {
@@ -41,6 +44,7 @@ function Stop-OrphanMcp($all) {
     foreach ($p in $all) { $byId[[int]$p.ProcessId] = $p }
     $orphans = @($all | Where-Object {
         $_.Name -in @('node.exe', 'cmd.exe') -and ([string]$_.CommandLine) -match $MCP_PATTERN -and
+        ([string]$_.CommandLine) -notmatch $MCP_KEEP_PATTERN -and
         -not (Test-HasClaudeAncestor $_ $byId)
     })
     if ($orphans.Count -eq 0) { return }

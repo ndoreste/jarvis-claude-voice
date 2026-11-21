@@ -23,7 +23,7 @@ import time
 import unicodedata
 from pathlib import Path
 
-from ajustes import PROYECTOS, USUARIO, claude_exe as _find_claude
+from ajustes import CONTACTOS_WHATSAPP, PROYECTOS, USUARIO, claude_exe as _find_claude
 
 ROOT = Path(__file__).resolve().parent.parent
 TASKS_DIR = ROOT / "data" / "tareas"
@@ -55,7 +55,19 @@ SYSTEM_PROMPT = (
     "español, sin markdown, sin listas, sin rutas largas ni URLs, diciendo qué has hecho "
     "o qué has encontrado. Para el navegador usa las herramientas de Claude in Chrome "
     f"(mcp__claude-in-chrome__*), que manejan el Chrome de {USUARIO} con sus sesiones abiertas; "
-    "no abras otro navegador aparte salvo que esas no estén disponibles.\n"
+    "no abras otro navegador aparte salvo que esas no estén disponibles. "
+    # [Nau] 19/11/2026 (Sueño): 9 encargos para un WhatsApp porque el MCP no da el número.
+    # La ruta de la nota va en data/usuario.toml (contactos_whatsapp), no en el código.
+    + (
+        "Si la orden es mandar o leer un WhatsApp de una persona o grupo, lee antes "
+        f"{CONTACTOS_WHATSAPP} "
+        "y busca ahí a quién se refiere (también por variantes mal transcritas del nombre); "
+        "si no está, dilo en vez de adivinar y nunca lo mandes al número del propio "
+        f"{USUARIO} salvo que lo pida.\n"
+        if CONTACTOS_WHATSAPP
+        else f"Nunca mandes un WhatsApp al número del propio {USUARIO} salvo que lo pida.\n"
+    )
+    +
     "REGLA DE CONFIRMACIÓN, sin excepciones: la orden llega transcrita de la voz y puede "
     "ser una activación falsa o un error de transcripción, así que aunque la orden lo pida "
     "de forma explícita, NO envíes nada a otras personas (correo, WhatsApp, mensajes), NO "
@@ -149,10 +161,14 @@ def prompt_for(task: dict) -> str:
 
 def subscription_env() -> dict[str, str]:
     """Sin claves de API: Claude Code usa siempre la sesión de claude.ai (plan Max), nunca
-    la API de pago por uso, aunque algún día haya una clave en las variables de entorno."""
+    la API de pago por uso, aunque algún día haya una clave en las variables de entorno.
+    GateGuard apagado (16/11/2026): las tareas sin proyecto corren en la carpeta personal, donde
+    no llega el ECC_GATEGUARD=off del proyecto jarvis, y se bloqueaban en consultas de solo lectura."""
     blocked = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
                "CLAUDE_CODE_USE_VERTEX"}
-    return {k: v for k, v in os.environ.items() if k.upper() not in blocked}
+    env = {k: v for k, v in os.environ.items() if k.upper() not in blocked}
+    env["ECC_GATEGUARD"] = "off"
+    return env
 
 
 def run(task: dict) -> dict:

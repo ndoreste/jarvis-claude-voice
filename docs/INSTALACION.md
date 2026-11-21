@@ -225,7 +225,7 @@ wscript "$J\bin\jarvis-arranque.vbs"
 
 Espera **1 o 2 minutos**: la primera vez se descargan los modelos de Whisper. Después abre [http://localhost:5173](http://localhost:5173).
 
-**Qué deberías ver.** El HUD con la CPU, la RAM y el tiempo de tu ciudad, y en el centro el estado del oyente en «en espera». Di **«¿Qué pasa, Jarvis?»**: si solo le llamas, te saluda («Hola, aquí estoy…»). Es la única frase que lo despierta («Hola, Jarvis» no). Cuando el HUD pase a «escuchando», pregunta «¿qué hora es?».
+**Qué deberías ver.** El HUD con la CPU, la RAM y el tiempo de tu ciudad, y en el centro el estado del oyente en «en espera». Di **«Hola Jarvis»**: si solo le llamas, te saluda («Hola, aquí estoy…»). Es la única frase que lo despierta («¿Qué pasa, Jarvis?» o «Jarvis, mira…» no). Cuando el HUD pase a «escuchando», pregunta «¿qué hora es?».
 
 Para ver qué está pasando por dentro:
 
@@ -268,7 +268,7 @@ Prueba estas cuatro frases en orden:
 
 | Di | Debería |
 |---|---|
-| «¿Qué pasa, Jarvis? ¿Qué hora es?» | Responder en un par de segundos |
+| «Hola Jarvis, ¿qué hora es?» | Responder en un par de segundos |
 | «¿Qué tengo mañana?» | Leer tu agenda (si hiciste el paso 9) |
 | «Crea en el escritorio un archivo prueba.txt que diga hola» | Decir «me pongo con ello» y, unos 20–30 s después, «ya está» |
 | «Borra el archivo prueba.txt del escritorio» | **Pedirte permiso** («¿Lo hago?») y borrarlo solo si dices que sí |

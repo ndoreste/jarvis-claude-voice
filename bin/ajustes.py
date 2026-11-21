@@ -30,6 +30,7 @@ USUARIO: str = str(_SETTINGS.get("nombre") or "usuario")
 PERFIL: str = str(_SETTINGS.get("perfil") or "").strip()
 PROYECTOS = Path(os.path.expandvars(os.path.expanduser(
     str(_SETTINGS.get("proyectos") or "~/claudeProjects"))))
+CONTACTOS_WHATSAPP: str = str(_SETTINGS.get("contactos_whatsapp") or "").strip()
 
 
 def claude_exe() -> str:

@@ -11,7 +11,7 @@
 
    | Ves | Significa | Qué hacer |
    |---|---|---|
-   | `Oído (sin «Jarvis»)` con palabras y volumen alto, pero no se activa | Whisper ha escrito mal «qué pasa» o el nombre | Dilo más claro y al principio de la frase. Si Whisper lo escribe de una forma nueva, añádela a `CALL_WORDS`, o enciende «Hey Jarvis» (`WAKE_BY_HEY_JARVIS = True`), que no pasa por Whisper |
+   | `Oído (sin «Jarvis»)` con palabras y volumen alto, pero no se activa | Whisper ha escrito mal «hola» o el nombre | Dilo más claro y al principio de la frase. Si Whisper lo escribe de una forma nueva, añádela a `CALL_WORDS`, o enciende «Hey Jarvis» (`WAKE_BY_HEY_JARVIS = True`), que no pasa por Whisper |
    | `Casi` | Solo con «Hey Jarvis» encendido: openWakeWord se ha quedado cerca del umbral (0,5) | Habla más cerca o más claro |
    | Volumen máximo muy bajo (0,002–0,05) | El micro no recoge: con voz cerca suele marcar ~0,6 | Revisa el micrófono predeterminado de Windows |
    | Ninguna línea | El oyente no está en marcha | Mira `vigilante.log` o lanza `bin\jarvis-arranque.vbs` |

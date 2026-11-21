@@ -1,8 +1,8 @@
 """Oyente manos libres de Jarvis.
 
-Escucha el micrófono en local y se activa solo con «¿Qué pasa, Jarvis?» (o «¿Qué dices,
-Jarvis?», como suele escribirlo Whisper): cada frase corta se transcribe con el Whisper
-local de la API de Jarvis y se busca la llamada (_wake_hit). «Hey Jarvis» por openWakeWord
+Escucha el micrófono en local y se activa solo con «Hola Jarvis» (desde el 21/11/2026):
+cada frase corta se transcribe con el Whisper local de la API de Jarvis y se busca la
+llamada (_wake_hit). «Hey Jarvis» por openWakeWord
 está desactivado desde el 09/11/2026 (WAKE_BY_HEY_JARVIS = False).
 Si solo le llaman saluda con la frase fija; si la pregunta va
 en la misma frase, responde directamente. Espera a que el usuario termine (frases a medias o
@@ -171,7 +171,7 @@ SALDO_REPLY = (
 )
 
 # Activación por nombre: variantes con las que Whisper suele escribir «Jarvis»
-# [Nau] 09/11/2026: es la vía PRINCIPAL («¿Qué pasa, Jarvis?» por Whisper); «Hey Jarvis» está apagado.
+# [Nau] 09/11/2026: es la vía PRINCIPAL («Hola Jarvis» por Whisper desde el 21/11); «Hey Jarvis» está apagado.
 # Si el nombre falla, la salida es un modelo propio de openWakeWord, no más variantes.
 # No añadir más variantes: NAME_SIMILARITY ya cubre las parecidas (ver CLAUDE.md, «Activación»).
 WAKE_NAME_WORD = re.compile(
@@ -187,11 +187,11 @@ SEGMENT_OVERLAP_FRAMES = 25  # ~2 s que se repiten en el trozo siguiente
 DIGITAL_SILENCE_RMS = 1e-4
 LEVEL_LOG_EVERY_S = 120
 NAME_SIMILARITY = 0.6
-# [Nau] 09/11/2026: la ÚNICA forma de despertarlo es «¿Qué pasa, Jarvis?» (pedido por Nau).
-# Se acepta también «¿Qué dices, Jarvis?»: Whisper suele escribir así «qué pasa».
-CALL_WORDS = {"pasa", "paso", "dices", "dice", "dises", "dise", "decis"}
-# Lo que puede ir antes del «qué» sin que deje de ser la llamada («Oye, ¿qué pasa, Jarvis?»)
-LEAD_WORDS = {"hola", "oye", "hey", "ey", "eh", "vale", "bueno", "pues", "venga", "oiga", "y", "a",
+# [Nau] 21/11/2026: la ÚNICA forma de despertarlo es «Hola Jarvis» (pedido por Nau; del 09/11
+# al 21/11 fue «¿Qué pasa, Jarvis?»). «Ola» es como Whisper escribe a veces «hola».
+CALL_WORDS = {"hola", "ola"}
+# Lo que puede ir antes del «hola» sin que deje de ser la llamada («Oye, hola Jarvis»)
+LEAD_WORDS = {"oye", "hey", "ey", "eh", "vale", "bueno", "pues", "venga", "oiga", "y", "a",
               "no", "buenas"}
 # «Hey Jarvis» (openWakeWord) desactivado el 09/11/2026: Nau quiere despertarlo solo con su frase
 WAKE_BY_HEY_JARVIS = False
@@ -1036,29 +1036,29 @@ def is_jarvis(word: str) -> bool:
 
 
 def _wake_hit(text: str) -> re.Match | None:
-    """[Nau] 09/11/2026: solo despierta con «¿Qué pasa, Jarvis?» (o «¿Qué dices, Jarvis?»,
-    como suele escribirlo Whisper), al principio de la frase: «Oye, ¿qué pasa, Jarvis?» sí;
-    «Hola Jarvis», «Jarvis, mira…» o hablar de él a mitad de frase, no."""
+    """[Nau] 21/11/2026: solo despierta con «Hola Jarvis», al principio de la frase:
+    «Oye, hola Jarvis» sí; «¿Qué pasa, Jarvis?», «Jarvis, mira…» o hablar de él a mitad
+    de frase, no."""
     words = list(re.finditer(r"[\w']+", text))
     for i, match in enumerate(words):
-        if i < 2 or not is_jarvis(match.group()):
+        if i < 1 or not is_jarvis(match.group()):
             continue
-        if _plain(words[i - 2].group()) != "que" or _plain(words[i - 1].group()) not in CALL_WORDS:
+        if _plain(words[i - 1].group()) not in CALL_WORDS:
             continue
-        start = max((m.end() for m in re.finditer(r"[.?!¿¡…;]", text[:words[i - 2].start()])), default=0)
-        before = re.findall(r"[\w']+", text[start:words[i - 2].start()])
+        start = max((m.end() for m in re.finditer(r"[.?!¿¡…;]", text[:words[i - 1].start()])), default=0)
+        before = re.findall(r"[\w']+", text[start:words[i - 1].start()])
         if all(_plain(w) in LEAD_WORDS for w in before):
             return match
     return None
 
 
 def wake_by_name(text: str) -> str | None:
-    """Si la frase es «¿Qué pasa, Jarvis?» devuelve lo que pide después ('' si solo le llama)."""
+    """Si la frase es «Hola Jarvis» devuelve lo que pide después ('' si solo le llama)."""
     hit = _wake_hit(text)
     if hit is None:
         return None
     rest = text[hit.end():].strip(" ,.;:!?¡¿")
-    # «¿Qué pasa, Jarvis? ¿Estás por ahí?»: solo le llama → saludo fijo
+    # «Hola Jarvis, ¿estás por ahí?»: solo le llama → saludo fijo
     if len(rest.split()) < 2 or PRESENCE_CHECK.fullmatch(_plain(rest)):
         return ""
     return rest
@@ -1141,7 +1141,7 @@ def listen(stream: Microphone, wake: Model, model_name: str) -> None:
     last_sound = time.monotonic()
     deaf_until = 0.0  # [Nau] hasta cuándo se ignora lo oído por un dictado de Escriba
     last_task_check = time.monotonic()
-    log.info("Escuchando «¿Qué pasa, Jarvis?» (cerebro Sonnet; reserva %s)", model_name)
+    log.info("Escuchando «Hola Jarvis» (cerebro Sonnet; reserva %s)", model_name)
     publish("idle", "")
     while True:
         frame = read_frame(stream)

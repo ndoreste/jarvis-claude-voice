@@ -8,9 +8,13 @@ nombre = "Alex"
 perfil = """Alex, de Madrid; estudia administración de sistemas y le interesan Linux, \
 las redes y la automatización"""
 
-# Carpeta con tus proyectos de Claude Code. «¿Qué pasa, Jarvis? En el proyecto de LinkedIn, …»
+# Carpeta con tus proyectos de Claude Code. «Hola Jarvis. En el proyecto de LinkedIn, …»
 # hace la tarea dentro de la subcarpeta que más se parezca a lo que digas.
 proyectos = "~/claudeProjects"
+
+# Nota con tus contactos de WhatsApp (nombre → número o chat). Si la pones, las tareas
+# de «manda un WhatsApp a…» la leen antes para no equivocarse de persona. Vacío: no se usa.
+contactos_whatsapp = ''
 
 # claude.exe nativo. Vacío: lo busca en el PATH, en ~/.local/bin y en %APPDATA%\npm.
 # Usa el .exe, no claude.cmd: el .cmd rompe las comillas del prompt de sistema.
