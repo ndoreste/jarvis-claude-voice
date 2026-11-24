@@ -40,6 +40,7 @@ import queue
 import threading
 from collections import deque
 from collections.abc import Iterable
+from datetime import datetime
 from itertools import chain
 from pathlib import Path
 
@@ -201,9 +202,21 @@ PRESENCE_CHECK = re.compile(
     r"(?:estas|esta|estais|estan) (?:por ahi|ahi|despierto|despiertos|disponible)|"
     r"me (?:oyes|escuchas|oye|escucha))"
 )
-# [Nau] 09/11/2026: saludo corto (antes «Hola…, aquí estoy como siempre, ¿en qué puedo
-# ayudarte?», ~4 s en los que no se le podía hablar)
-CALL_REPLY = f"Dime, {USUARIO}."
+# [Nau] 24/11/2026: saludo según la hora, pedido por Nau (del 09/11 al 24/11 fue «Dime, Nau.»).
+# Días de 6:00 a 13:59, tardes de 14:00 a 20:59 y noches el resto, como se dice en Canarias.
+GREETING_TEMPLATE = "{saludo}, señor. ¿En qué puedo ayudarle?"
+
+
+def call_reply(now: datetime | None = None) -> str:
+    """Saludo a «Hola Jarvis» a secas, según la hora del día."""
+    hour = (now or datetime.now()).hour
+    if 6 <= hour < 14:
+        saludo = "Buenos días"
+    elif 14 <= hour < 21:
+        saludo = "Buenas tardes"
+    else:
+        saludo = "Buenas noches"
+    return GREETING_TEMPLATE.format(saludo=saludo)
 # Palabras con las que una frase no suele acabar: si termina así, el usuario sigue hablando
 UNFINISHED_ENDINGS = {
     "que", "para", "y", "o", "pero", "porque", "como", "de", "del", "el", "la", "los",
@@ -499,16 +512,16 @@ def play_audio(audio: bytes, stream: Microphone | None, floor: float | None,
     return play_file(path, stream, floor, said)
 
 
-def say_greeting(stream: Microphone) -> list[np.ndarray] | None:
-    """El saludo fijo se sintetiza una vez y se guarda: suena al instante y no gasta saldo."""
-    cached = ROOT / "data" / f"saludo-{hashlib.sha1(CALL_REPLY.encode()).hexdigest()[:8]}.wav"
+def say_greeting(stream: Microphone, text: str) -> list[np.ndarray] | None:
+    """Cada saludo se sintetiza una vez y se guarda: suena al instante y no gasta saldo."""
+    cached = ROOT / "data" / f"saludo-{hashlib.sha1(text.encode()).hexdigest()[:8]}.wav"
     try:
         if not cached.exists():
-            cached.write_bytes(synthesize(CALL_REPLY))
-        return play_file(cached, stream, said=CALL_REPLY)
+            cached.write_bytes(synthesize(text))
+        return play_file(cached, stream, said=text)
     except (urllib.error.URLError, OSError, ValueError, RuntimeError):
         log.exception("No se pudo reproducir el saludo guardado")
-        return say(CALL_REPLY, stream)
+        return say(text, stream)
 
 
 def speak_fallback(text: str) -> None:
@@ -988,10 +1001,11 @@ def conversation(stream: Microphone, model: str, first_question: str = "",
             heard = deliver(stream, messages, first_question, answer, first, recalled,
                             time.monotonic() - started_at)
         else:
-            log.info("Jarvis: %s", CALL_REPLY)
-            messages.append({"role": "assistant", "content": CALL_REPLY})
-            publish("speaking", CALL_REPLY)
-            heard = done_speaking(stream, say_greeting(stream))
+            greeting = call_reply()
+            log.info("Jarvis: %s", greeting)
+            messages.append({"role": "assistant", "content": greeting})
+            publish("speaking", greeting)
+            heard = done_speaking(stream, say_greeting(stream, greeting))
         while True:
             if heard is None:
                 heard = announce_tasks(stream, messages, finished_tasks())
