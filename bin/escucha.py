@@ -203,16 +203,16 @@ PRESENCE_CHECK = re.compile(
     r"me (?:oyes|escuchas|oye|escucha))"
 )
 # [Nau] 24/11/2026: saludo según la hora, pedido por Nau (del 09/11 al 24/11 fue «Dime, Nau.»).
-# Días de 6:00 a 13:59, tardes de 14:00 a 20:59 y noches el resto, como se dice en Canarias.
+# Días de 6:00 a 12:59, tardes de 13:00 a 20:59 y noches el resto.
 GREETING_TEMPLATE = "{saludo}, señor. ¿En qué puedo ayudarle?"
 
 
 def call_reply(now: datetime | None = None) -> str:
     """Saludo a «Hola Jarvis» a secas, según la hora del día."""
     hour = (now or datetime.now()).hour
-    if 6 <= hour < 14:
+    if 6 <= hour < 13:
         saludo = "Buenos días"
-    elif 14 <= hour < 21:
+    elif 13 <= hour < 21:
         saludo = "Buenas tardes"
     else:
         saludo = "Buenas noches"
