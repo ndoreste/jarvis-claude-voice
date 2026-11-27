@@ -28,23 +28,24 @@ def _log_action(kind: str, outcome: str) -> None:
         pass
 
 
-def run_action(args: argparse.Namespace) -> tuple[str, str]:
-    """Ejecuta una acción al momento: ('hecho', qué), ('cerrado', qué) si no había nada que
-    cerrar o ('fallo', detalle) si hay que encargarla como tarea. También la usa el cerebro
-    directamente con las marcas [[accion …]] (cerebro_claude.py), sin pasar por Bash."""
-    from acciones_pc import ActionError, NotOpenError, run
+def run_action(args: argparse.Namespace, order: str = "", spec: str = "") -> tuple[str, str]:
+    """Ejecuta una acción al momento. Devuelve (resultado, texto):
+    'hecho' (ya dijo «Enseguida, señor.»), 'decir' (decir el texto), 'confirmar' (el texto es la
+    pregunta antes de enviar), 'cerrado' (no había nada que cerrar) o 'fallo' (encargarla como
+    tarea). La usa el cerebro con las marcas [[accion …]] (cerebro_claude.py), sin pasar por Bash;
+    el registro y el «deshaz» van en acciones_voz.py."""
+    from acciones_pc import ActionError
+    from acciones_voz import run
 
     try:
-        done = run(args.tipo, args.valor, args.texto, args.en, args.abrir, args.lista)
-    except NotOpenError as exc:
-        # [Nau] 26/11/2026: nada que cerrar → se dice al momento (antes, tarea de ~15 s)
-        _log_action(args.tipo, f"no estaba abierto: {exc}")
-        return "cerrado", str(exc)
-    except Exception as exc:  # noqa: BLE001 - cualquier fallo: se encarga como tarea
+        outcome, text = run(args, order, spec)
+    except Exception as exc:  # noqa: BLE001 - cualquier otro fallo: se encarga como tarea
         _log_action(args.tipo, f"fallo: {exc!r}"[:300])
         return "fallo", str(exc) if isinstance(exc, ActionError) else "fallo técnico"
-    _log_action(args.tipo, f"hecho: {done}")
-    return "hecho", done
+    # [Nau] 26/11/2026: «cerrado» = nada que cerrar → se dice al momento (antes, tarea de ~15 s)
+    _log_action(args.tipo, f"{outcome}: {text}"[:300] if args.tipo not in ("whatsapp", "correo")
+                else outcome)
+    return outcome, text
 
 
 def parse_action(argv: list[str]) -> argparse.Namespace:
@@ -75,6 +76,12 @@ def main() -> int:
         if outcome == "cerrado":
             print(f"No hacía falta: {detail}. NO lo encargues. Dile solo, muy corto, que ya "
                   "estaba cerrado (p. ej. «Ya estaba cerrado, señor.»).")
+            return 1
+        if outcome == "decir":
+            print(f"Dile exactamente: {detail}")
+            return 0
+        if outcome == "confirmar":
+            print("Enviar o quitar algo necesita el «sí» de voz: desde aquí no se hace.")
             return 1
         print(f"No se ha podido al momento ({detail}). Encárgalo ahora con «encargar» "
               "(misma orden, más clara) sin volver a decir «Enseguida, señor.».")
@@ -124,12 +131,20 @@ def build_parser() -> argparse.ArgumentParser:
     action = sub.add_parser("accion", help="Abrir apps o webs, música, volumen, bloquear")
     action.add_argument("tipo", choices=["abrir", "cerrar", "musica", "volumen", "bloquear",
                                          "carpeta", "archivo", "nota", "buscar", "reciente",
-                                         "captura", "copiar"])
+                                         "captura", "copiar",
+                                         # [Nau] 27/11/2026 (acciones_voz.py)
+                                         "borrar", "recuperar", "deshacer", "whatsapp", "correo",
+                                         "agendar", "desagendar", "rutina", "guardar_rutina"])
     action.add_argument("valor", nargs="?", default="")
     action.add_argument("--texto", default="", help="Contenido del archivo o texto a copiar")
     action.add_argument("--en", default="", help="Carpeta: escritorio, descargas, un proyecto…")
     action.add_argument("--abrir", action="store_true", help="Abrir el archivo al crearlo")
     action.add_argument("--lista", default="", help="Lista o canción de Spotify por su nombre")
+    action.add_argument("--asunto", default="", help="Asunto del correo")
+    action.add_argument("--inicio", default="", help="Evento: 2026-11-28T17:00 (o solo la fecha)")
+    action.add_argument("--fin", default="", help="Evento: fin (sin él, dura 1 hora)")
+    action.add_argument("--lugar", default="", help="Evento: lugar")
+    action.add_argument("--dia", default="", help="Quitar evento: el día (2026-11-28)")
     return parser
 
 

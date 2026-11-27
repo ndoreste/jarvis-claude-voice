@@ -89,10 +89,27 @@ comillas simples, con \\n para los saltos de línea y '\\'' para una comilla sim
 son opcionales); [[accion nota "texto"]] (apunta algo en sus notas); [[accion buscar "nombre del \
 archivo"]] (lo busca y lo abre); [[accion reciente foto|video|documento|pdf|audio --en carpeta]] \
 (abre lo último que guardó: «abre la última foto», «el último PDF de Descargas»); [[accion \
-captura]] (captura de pantalla); [[accion copiar "texto"]] (al portapapeles). Nunca escribas una \
-marca que {USUARIO} no haya pedido. Solo va con «encargar» lo que estas no cubren: correo, \
-WhatsApp, Notion, el navegador más allá de abrir una web, cambiar o borrar archivos que ya existen, \
-programas largos o en un proyecto, varios pasos.
+captura]] (captura de pantalla); [[accion copiar "texto"]] (al portapapeles); \
+[[accion borrar "nombre del archivo o carpeta" --en carpeta]] (lo manda a TU papelera, se puede \
+recuperar; --en opcional); [[accion recuperar "nombre"]] (lo saca de tu papelera; sin nombre, lo \
+último); [[accion deshacer]] («deshaz eso», «vuelve atrás»: deshace lo último que hiciste); \
+[[accion agendar "título" --inicio 2026-11-28T17:00 --fin 2026-11-28T18:00 --lugar "sitio"]] \
+(añade un evento a su calendario; fechas de aquí en ese formato calculadas con la fecha de \
+[Ahora]; sin hora, --inicio 2026-11-28 es todo el día; --fin y --lugar opcionales, sin --fin dura \
+una hora); [[accion desagendar "título" --dia 2026-11-28]] (quita un evento; --dia opcional); \
+[[accion rutina "nombre"]] (repite una rutina guardada: «modo estudio»); [[accion guardar_rutina \
+"nombre"]] («guarda esto como modo estudio»: guarda lo hecho en esta conversación).
+WhatsApp y correo también son al momento: [[accion whatsapp "a quién" --texto 'mensaje']] y \
+[[accion correo "a quién o su correo" --asunto 'asunto' --texto 'cuerpo']]. Escribe el mensaje \
+como lo diría {USUARIO}, en su nombre y sin firmar como Jarvis. Para whatsapp, correo y \
+desagendar NO digas «Enseguida, señor.»: escribe SOLO la marca; el sistema le lee a {USUARIO} \
+qué va a enviar o quitar y lo hace cuando él diga que sí (tú no ves ese «sí»). Si en vez de sí \
+corrige algo («cámbialo a…»), vuelve a escribir la marca con el cambio. Si el sistema te avisa de \
+que un envío se hizo, no lo repitas. Para borrar, agendar, recuperar, deshacer y las rutinas el \
+sistema dice el resultado: tú solo «Enseguida, señor.» y la marca. \
+Nunca escribas una marca que {USUARIO} no haya pedido. Solo va con «encargar» lo que estas no \
+cubren: Notion, leer correos o WhatsApps, el navegador más allá de abrir una web, cambiar \
+archivos que ya existen, programas largos o en un proyecto, varios pasos.
 
 Herramientas (solo puedes ejecutar estas órdenes con Bash; cualquier otra se deniega):
 - Agenda de Google Calendar (solo lectura): {TOOL_CMD} agenda --desde N --dias N \
@@ -100,8 +117,8 @@ Herramientas (solo puedes ejecutar estas órdenes con Bash; cualquier otra se de
 - Tiempo (previsión, ~1 s): {TOOL_CMD} tiempo --desde N --dias N [--ciudad "nombre"] (desde: \
 0 hoy, 1 mañana; sin --ciudad, la de {USUARIO}). Para el tiempo usa SIEMPRE esta, nunca la \
 búsqueda web (tarda 30 s).
-- Para CUALQUIER cosa que {USUARIO} quiera que se HAGA en su ordenador o en sus cuentas (archivos, \
-programas, correo, WhatsApp, Notion, Spotify, el navegador, código…): {TOOL_CMD} encargar \
+- Para lo demás que {USUARIO} quiera que se HAGA en su ordenador o en sus cuentas y las marcas \
+no cubran (Notion, el navegador, código, leer correos…): {TOOL_CMD} encargar \
 --tarea "orden completa y clara, con el contexto necesario". La tarea se hace en segundo \
 plano y tú mismo le contarás el resultado a {USUARIO} al terminar. PRIMERO di exactamente \
 «Enseguida, señor.» (nada más, sin repetir la orden; pedido por {USUARIO}) y DESPUÉS lanza la \
@@ -458,11 +475,13 @@ class ClaudeBrain:
             log.warning("Acción no entendida (%s): la encargo como tarea", exc)
             _delegate(order, "no entendí la acción rápida")
             return None
-        outcome, detail = run_action(args)
+        outcome, detail = run_action(args, order, spec)
         log.info("Acción al momento: %s → %s (%.2f s)", args.tipo, outcome,
                  time.monotonic() - started)
         if outcome == "cerrado":
             return NOT_OPEN_REPLY
+        if outcome in ("decir", "confirmar"):  # [Nau] 27/11/2026: resultado o «¿Lo mando?»
+            return detail
         if outcome == "fallo":
             _delegate(order, detail)
         return None

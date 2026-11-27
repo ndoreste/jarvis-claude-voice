@@ -49,7 +49,8 @@ import numpy as np
 import sounddevice as sd
 from openwakeword.model import Model
 
-from acciones_pc import duck_media, restore_media
+import diario_acciones as diario
+from acciones_pc import ActionError, duck_media, restore_media
 from ajustes import USUARIO
 from cerebro_claude import ClaudeBrain
 from escriba_activo import escriba_dictando
@@ -163,6 +164,14 @@ ADDRESS_NO_REPLY = "Entendido, señor."
 ADDRESS_QUIET_S = 20.0  # tras preguntar, no vuelve a preguntar en este rato
 ADDRESS_ANSWER_S = 10.0  # lo que diga en este rato tras la pregunta es la respuesta (va para él)
 ADDRESS_FOLLOW_S = 10.0  # si empieza a hablar en este rato tras su respuesta, va para él
+# Órdenes que van para Jarvis aunque no lleven su nombre (is_order); sin «mira» ni «dime»,
+# que se dicen mucho a otras personas
+ORDER_VERBS = {"mandame", "mandale", "manda", "envia", "enviale", "enviame", "pon", "ponme",
+               "ponle", "quita", "quitame", "abre", "abreme", "cierra", "cierrame", "agenda",
+               "agendame", "apunta", "apuntame", "borra", "borrame", "recupera", "deshaz", "crea",
+               "creame", "busca", "buscame", "sube", "baja", "pausa", "guarda", "escribele",
+               "reproduce", "silencia", "bloquea", "copia", "anota", "anotame"}
+ORDER_LEADS = {"oye", "vale", "y", "ahora", "bueno", "venga", "tambien", "luego", "porfa"}
 JUNK_TURNS_MAX = 2  # frases de ruido seguidas que no cierran la conversación
 YES_WORDS = {"si", "claro", "exacto", "correcto", "afirmativo", "efectivamente", "eso", "obvio"}
 NO_REPLY = re.compile(r"^(?:no|nada|tranquilo|olvidalo|dejalo|da igual|era otra|hablaba con)\b")
@@ -1091,6 +1100,16 @@ def names_jarvis(text: str) -> bool:
     return any(is_jarvis(w) for w in re.findall(r"[\w']+", text))
 
 
+def is_order(text: str) -> bool:
+    """[Nau] 27/11/2026: ¿es una orden de las que hace Jarvis («Mándame un correo…», «Pon el
+    mix…», «Agéndame…»)? Dentro de una conversación va para él sin preguntar «¿Es a mí?»:
+    en la prueba, la orden del correo se perdió tras esa pregunta."""
+    words = [_plain(w) for w in re.findall(r"[\w']+", text)]
+    while words and words[0] in ORDER_LEADS:
+        words = words[1:]
+    return len(words) >= 2 and words[0] in ORDER_VERBS
+
+
 def addresses_jarvis(text: str) -> bool:
     """[Nau] 26/11/2026: ¿le habla A él? Su nombre detrás de una preposición («el código de
     Jarvis», «hablaba con Jarvis») es hablar DE él: eso se pregunta con «¿Es a mí, señor?»."""
@@ -1132,7 +1151,8 @@ def screen_addressee(stream: Microphone, messages: list[dict], text: str,
             _addressee.asked_at = 0.0
             return text, None
         # Fuera de ese rato: es una frase nueva y se mira como cualquier otra
-    if addresses_jarvis(text) or interrupted or _last_said(messages).rstrip().endswith("?"):
+    if (addresses_jarvis(text) or is_order(text) or interrupted
+            or _last_said(messages).rstrip().endswith("?")):
         return text, None
     if _addressee.follows_reply(spoke_at) and not _addressee.ignore_others:
         log.info("Me habla justo después de mi respuesta: es para mí")
@@ -1148,6 +1168,38 @@ def screen_addressee(stream: Microphone, messages: list[dict], text: str,
     _addressee.asked_at = time.monotonic()
     log.info("Frase sin mi nombre (%d palabras): pregunto si es para mí", len(words))
     return None, speak_short(stream, ADDRESS_QUESTION)
+
+
+def answer_pending(stream: Microphone, messages: list[dict], text: str) -> tuple[bool, Heard]:
+    """[Nau] 27/11/2026: si hay un WhatsApp, un correo o un evento por quitar esperando su «sí»
+    (diario_acciones), lo resuelve aquí, en el oyente: el modelo nunca da el «sí» por él.
+    «Sí» → se hace; «no» → se cancela; otra cosa → se descarta y la frase va al cerebro.
+    Devuelve (resuelto, audio con el que le interrumpió)."""
+    if not diario.has_pending():
+        return False, None
+    kind = diario.answer_kind(text)
+    pending = diario.take_pending()
+    if pending is None or kind == "otra":
+        if pending is not None:
+            log.info("Había un envío pendiente y ha dicho otra cosa: lo descarto")
+            BRAIN.note("El envío que preguntaste NO se ha hecho (dijo otra cosa).")
+        return False, None
+    log.info("%s: %s (respuesta a «%s»)", USUARIO, text, pending.question[:60])
+    if kind == "no":
+        reply = "Cancelado, señor."
+        BRAIN.note("Lo que preguntaste antes de enviar se ha cancelado.")
+    else:
+        try:
+            reply = pending.run()
+            BRAIN.note(f"Hecho tras su sí: {reply}")
+        except Exception as exc:  # noqa: BLE001 - se dice y la charla sigue
+            log.warning("El envío confirmado ha fallado: %r", exc)
+            reply = str(exc) if isinstance(exc, ActionError) else "No he podido enviarlo, señor."
+    log.info("Jarvis: %s", reply)
+    messages.append({"role": "user", "content": text})
+    messages.append({"role": "assistant", "content": reply})
+    publish("speaking", reply)
+    return True, done_speaking(stream, say(reply, stream))
 
 
 def respond(stream: Microphone, messages: list[dict], model: str, turn: Turn,
@@ -1195,6 +1247,9 @@ def respond(stream: Microphone, messages: list[dict], model: str, turn: Turn,
                 publish("listening", "")
                 return True, heard
             turn.text = question
+        handled, heard = answer_pending(stream, messages, turn.text)
+        if handled:
+            return True, heard
         recalled = MEMORY.recall(turn.text) if RESUME_REQUEST.search(turn.text) else None
         answer = start_answer(messages, model, turn.text, recalled)
         first = next(answer, None)
@@ -1386,6 +1441,7 @@ def conversation(stream: Microphone, model: str, first_question: str = "",
     first_new = len(messages)
     _addressee.reset()
     _end.junk = 0
+    diario.mark_conversation()  # «guarda esto como…» toma lo hecho desde aquí
     try:
         if tasks:
             heard = announce_tasks(stream, messages, tasks)

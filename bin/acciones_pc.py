@@ -124,6 +124,7 @@ LIST_FILLER_WORDS = {"mi", "mis", "tu", "la", "el", "los", "las", "de", "del", "
 SPOTIFY_PAGE_WAIT_S = 8.0  # lo que se espera a que se abra la lista para pulsar su play
 SPOTIFY_PAUSE_SETTLE_S = 0.6  # tras pausar, para que la página vuelva a llevar su nombre
 _LIST_TITLES: dict[str, str] = {}  # URI → nombre de la lista en Spotify (se aprende al ponerla)
+current_list: list[str] = []  # nombre (en la caché) de la última lista puesta
 SPOTIFY_SAME_PAGE_S = 2.0  # si el título no cambia en este rato, era la misma lista
 # Nombres de los botones de la cabecera de una lista (Spotify en español o en inglés)
 SPOTIFY_SHUFFLE_BUTTON = re.compile(
@@ -150,6 +151,44 @@ class ActionError(RuntimeError):
 
 class NotOpenError(ActionError):
     """Lo que había que cerrar ya no está abierto: se dice al momento, sin tarea."""
+
+
+class SpeakError(ActionError):
+    """[Nau] 27/11/2026: no se puede, y una tarea tampoco ayudaría («no tengo a Pepe en
+    WhatsApp», «eso no se puede deshacer»): se dice el mensaje en voz alta, sin tarea."""
+
+
+# [Nau] 27/11/2026: lo último que ha creado una acción (para «deshaz lo último»)
+last_created: list[Path] = []
+
+
+def volume_level() -> float | None:
+    """Volumen general actual (0–1), o None sin pycaw."""
+    try:
+        return float(_endpoint().GetMasterVolumeLevelScalar())
+    except Exception:  # noqa: BLE001 - sin pycaw o sin altavoz
+        return None
+
+
+def clipboard_text() -> str | None:
+    """Texto del portapapeles, o None si no hay texto."""
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    if not user32.OpenClipboard(None):
+        return None
+    try:
+        handle = user32.GetClipboardData(13)  # CF_UNICODETEXT
+        if not handle:
+            return None
+        pointer = kernel32.GlobalLock(handle)
+        try:
+            return ctypes.wstring_at(pointer) if pointer else None
+        finally:
+            kernel32.GlobalUnlock(handle)
+    finally:
+        user32.CloseClipboard()
 
 
 # ── Utilidades ────────────────────────────────────────────────────────────────
@@ -538,6 +577,7 @@ def play_list(name: str, wait: bool = False) -> str:
     if score < LIST_MATCH:
         raise ActionError(_learn_hint(name))
     was_closed = spotify_state() == "cerrado"
+    current_list[:] = [found]  # para «deshaz» (diario_acciones guarda la anterior)
     if wait or not BACKGROUND_OK:
         start_spotify_list(uri)
     else:
@@ -989,6 +1029,7 @@ def _free_path(path: Path) -> Path:
 def make_folder(name: str, where: str = "") -> str:
     folder = _free_path(_place(where) / _safe_name(name))
     folder.mkdir(parents=True)
+    last_created[:] = [folder]
     return f"carpeta «{folder.name}» creada en {folder.parent.name}"
 
 
@@ -999,6 +1040,7 @@ def make_file(name: str, text: str, where: str = "", open_it: bool = False) -> s
     path = _free_path(_place(where) / name)
     path.write_text(text.replace("\\n", "\n") + ("\n" if text and not text.endswith("\n") else ""),
                     encoding="utf-8")
+    last_created[:] = [path]
     if open_it:
         _start(str(path))
     return f"archivo «{path.name}» creado en {path.parent.name}"
@@ -1009,9 +1051,26 @@ def add_note(text: str) -> str:
         raise ActionError("Falta el texto de la nota.")
     notes = jarvis_folder() / NOTES_FILE
     stamp = time.strftime("%d/%m/%Y %H:%M")
+    line = f"- {stamp} — {text.strip()}\n"
     with notes.open("a", encoding="utf-8") as fh:
-        fh.write(f"- {stamp} — {text.strip()}\n")
+        fh.write(line)
+    last_note[:] = [notes, line]
     return "nota apuntada"
+
+
+last_note: list = []  # [archivo, línea] de la última nota (para deshacerla)
+
+
+def remove_last_note(notes: Path, line: str) -> bool:
+    """Quita la nota si sigue siendo la última línea del archivo."""
+    try:
+        text = notes.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if not text.endswith(line):
+        return False
+    notes.write_text(text[: -len(line)], encoding="utf-8")
+    return True
 
 
 def open_folder(name: str) -> Path | None:
@@ -1021,28 +1080,44 @@ def open_folder(name: str) -> Path | None:
     return folder
 
 
-def find_file(query: str) -> str:
-    """Busca un archivo por su nombre en las carpetas personales y en los proyectos, y lo abre."""
-    wanted = _plain(Path(query).stem if "." in query else query)
-    if len(wanted) < 3:
-        raise ActionError("Dime un nombre de archivo más largo.")
-    roots = [p for p in (known_folder(k) for k in SEARCH_FOLDERS) if p and p.is_dir()]
-    try:
-        from ajustes import PROYECTOS
+def _strict_similarity(query: str, name: str) -> float:
+    """[Nau] 27/11/2026: para borrar, el nombre entero y sin el «empieza igual» de _similarity
+    («borra Descargas» encontró «descargas_primera_pagina.png» con 0,9)."""
+    q, n = _plain(query), _plain(name)
+    return 1.0 if q == n else difflib.SequenceMatcher(None, q, n).ratio()
 
-        if PROYECTOS.is_dir():
-            roots.append(PROYECTOS)
-    except ImportError:
-        pass
+
+def locate(query: str, where: str = "", folders: bool = False, strict: bool = False) -> Path:
+    """El archivo (o carpeta, con folders=True) que más se parece a «query», en las carpetas
+    personales y los proyectos, o solo en «where». Con empate, el más reciente.
+    strict (para borrar): nombre entero parecido y sin buscar en los proyectos."""
+    wanted = _plain(Path(query).stem if "." in query and not folders else query)
+    if len(wanted) < 3:
+        raise SpeakError("Dime un nombre más largo, señor.")
+    similarity = _strict_similarity if strict else _similarity
+    if where.strip():
+        place = known_folder(where) or _project_folder(where)
+        if place is None or not place.is_dir():
+            raise SpeakError(f"No sé qué carpeta es «{where}».")
+        roots = [place]
+    else:
+        roots = [p for p in (known_folder(k) for k in SEARCH_FOLDERS) if p and p.is_dir()]
+        try:
+            from ajustes import PROYECTOS
+
+            if PROYECTOS.is_dir() and not strict:
+                roots.append(PROYECTOS)
+        except ImportError:
+            pass
     deadline = time.monotonic() + SEARCH_MAX_S
     best: tuple[float, float, Path] | None = None
     for root in roots:
         for folder, dirs, files in os.walk(root):
             dirs[:] = [d for d in dirs if not d.startswith(".") and d not in SEARCH_SKIP]
-            for file in files:
-                score = _similarity(wanted, Path(file).stem)
+            for item in (dirs if folders else files):
+                score = similarity(wanted, item if folders else Path(item).stem)
                 if score >= FILE_MATCH:
-                    path = Path(folder) / file
+                    path = Path(folder) / item
                     try:
                         mtime = path.stat().st_mtime
                     except OSError:
@@ -1054,9 +1129,19 @@ def find_file(query: str) -> str:
         if time.monotonic() > deadline:
             break
     if best is None:
-        raise ActionError(f"No encuentro ningún archivo que se llame «{query}».")
-    _start(str(best[2]))
-    return f"abierto el archivo «{best[2].name}»"
+        raise SpeakError(f"No encuentro {'ninguna carpeta' if folders else 'ningún archivo'} "
+                         f"que se llame «{query}».")
+    return best[2]
+
+
+def find_file(query: str) -> str:
+    """Busca un archivo por su nombre en las carpetas personales y en los proyectos, y lo abre."""
+    try:
+        path = locate(query)
+    except SpeakError as exc:
+        raise ActionError(str(exc)) from exc  # como antes: si no lo encuentra, lo busca una tarea
+    _start(str(path))
+    return f"abierto el archivo «{path.name}»"
 
 
 def open_latest(where: str = "", kind: str = "") -> str:
