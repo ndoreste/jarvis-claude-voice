@@ -67,6 +67,7 @@ class Answer:
         self.source = "sonnet"
         self.failed = False
         self._cancelled = False
+        self._brain = brain
         self._chunks = self._produce(brain, prompt, fallback)
 
     def __iter__(self) -> Iterator[str]:
@@ -80,8 +81,13 @@ class Answer:
         return " ".join("".join(self.parts).split())
 
     def cancel(self) -> None:
-        """Deja de entregar trozos (El usuario ha interrumpido o ha seguido hablando)."""
+        """Deja de entregar trozos (el usuario ha interrumpido o ha seguido hablando) y
+        [Nau] 26/11/2026 corta también el turno en el cerebro, para que no siga con él."""
+        if self._cancelled:
+            return
         self._cancelled = True
+        if self.source == "sonnet":
+            self._brain.interrupt()
 
     def _produce(self, brain: ClaudeBrain, prompt: str,
                  fallback: Callable[[], str | None]) -> Iterator[str]:

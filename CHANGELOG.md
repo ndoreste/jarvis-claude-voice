@@ -2,6 +2,32 @@
 
 Jarvis lo uso a diario desde el 06/11/2026. Este es el historial real de cambios e incidencias, con síntoma, causa y arreglo.
 
+## 2026-11-26
+
+Objetivo del día: que hablar con Jarvis se parezca a las películas, con respuestas en 1–2 s y órdenes que se hagan al momento.
+
+### Añadido
+- **Acciones al momento** (`bin/acciones_pc.py`, `jarvis-herramienta accion`): abrir apps del menú Inicio, marcadores de Chrome y webs; cerrar programas, carpetas o la propia interfaz; música (play, pausa, siguiente); volumen del sistema (`pycaw`); crear carpetas, archivos y scripts cortos; apuntar notas; buscar un archivo y abrir lo último guardado («la última foto»); captura de pantalla, copiar al portapapeles y bloquear el PC. Se hacen en 1–3 s sin lanzar Claude Code; antes, «abre Spotify» tardaba 15–20 s. Varias en una frase («cierra el Bloc de notas, todas las carpetas y tu interfaz») se hacen en el mismo segundo.
+- **Trabajador siempre encendido** (`bin/trabajador_claude.py`): una sesión de Claude Code que se queda abierta para las tareas. Empieza en 0,9 s, una consulta sencilla acaba en 7–9 s (antes ~20 s) y recuerda las tareas anteriores. Se apaga tras 15 min sin trabajo.
+- **La música baja mientras le hablas** (al 20 %) y vuelve a su volumen al despedirte.
+- **La interfaz en su propia ventana y a pantalla completa**, para poder cerrarla por voz sin tocar las pestañas del navegador.
+- **«¿Es a mí, señor?»**: en plena conversación, lo que oye sin su nombre lo pregunta antes de contestar, salvo que le hables justo después de su respuesta. Por privacidad, de esas frases solo se registra el número de palabras.
+- **Volver a llamarle solo por su nombre** durante 5 min («Jarvis, ¿cuánto falta?»), pero no cuando se habla *de* él («el código de Jarvis»).
+- **Whisper `small` en la NPU** (OpenVINO): 0,3–0,7 s por frase frente a 1,3–1,5 s en la CPU.
+
+### Cambiado
+- Dice «Enseguida, señor.» al recibir una orden y la hace **siempre**, aunque ya la hubiera hecho antes: el usuario puede haberlo cerrado él mismo.
+- Si lo que le pides cerrar ya no está abierto, lo dice al momento («Ya estaba cerrado, señor.») en vez de lanzar una tarea.
+- Voz `eleven_turbo_v2_5` (0,41 s por frase).
+
+### Arreglado
+| Síntoma | Causa | Arreglo |
+|---|---|---|
+| Con música de fondo tomaba «No, no, no…» ×200 como una frase | Whisper entra en bucle con música | `drop_repetition`: los bucles se recortan y, si eran casi toda la frase, se descarta |
+| Una sola petición con pausas lanzaba 4 tareas | Cortar la respuesta no paraba el turno del cerebro | El corte interrumpe el turno de verdad (mensaje de control de *stream-json*) |
+| Las tareas se quedaban «en curso» para siempre al reiniciar el oyente | Heredaban el Job Object del cerebro | Se lanzan con `CREATE_BREAKAWAY_FROM_JOB`; las de más de 30 min se dan por perdidas |
+| Tras mucho silencio, el primer «Hola Jarvis» no despierta; el segundo sí | El auricular manda ceros en silencio (medido también por WDM-KS) y se come el principio de la primera frase | Sin arreglo de software fiable: queda documentado en [solución de problemas](docs/solucion-de-problemas.md) |
+
 ## 2026-11-10
 
 ### Añadido

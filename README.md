@@ -16,10 +16,15 @@ Funciona con la **suscripción de Claude** (Pro o Max): ni la voz ni las tareas 
 |---|---|
 | «Hola Jarvis, ¿qué tengo mañana?» | Consulta tu Google Calendar (solo lectura) y te lo cuenta |
 | «¿Qué tiempo hace en Madrid el sábado?» | Busca en la web y responde en una o dos frases |
-| «Organiza la carpeta de Descargas» | Dice «me pongo con ello», Claude Code lo hace en segundo plano y Jarvis te avisa al acabar |
+| «Abre Spotify y pon música», «cierra el Bloc de notas y todas las carpetas» | Lo hace **al momento** (1–3 s, sin lanzar Claude Code), también varias cosas en la misma frase |
+| «Crea un script en el escritorio que…», «apunta que mañana…», «abre la última foto» | Escribe el archivo, apunta la nota o abre lo último guardado, también al momento |
+| «Abre tu interfaz» / «cierra tu interfaz» | Abre el HUD a pantalla completa en su propia ventana y lo cierra sin tocar tus pestañas |
+| «Organiza la carpeta de Descargas» | Dice «Enseguida, señor.», Claude Code lo hace en segundo plano y Jarvis te avisa al acabar |
 | «En el proyecto de LinkedIn, prepara el post del lab de hoy» | La tarea arranca **dentro de esa carpeta**, con su `CLAUDE.md`, memoria y skills |
 | «Envía el correo a…» | Lo prepara y **te pide permiso por voz** («¿Lo hago?») antes de enviar nada |
 | *(le interrumpes mientras habla)* | Se calla y te escucha (distingue tu voz de su propio eco) |
+| *(hablas con otra persona en plena conversación)* | Pregunta «¿Es a mí, señor?» antes de contestar a algo dicho sin su nombre |
+| *(suena música mientras le hablas)* | La baja al 20 % y la devuelve a su volumen al despedirte |
 
 ## Por qué es distinto
 
@@ -29,7 +34,7 @@ Hay otros proyectos que juntan voz y Claude Code; el más conocido es [ethanplus
 - **Confirmación obligatoria.** Enviar, publicar, pagar o borrar nunca se hace a la primera, porque una falsa activación de voz no puede tener consecuencias. Claude Code deja la tarea en `CONFIRMAR`, Jarvis te lo pregunta y solo con tu «sí» se reanuda la sesión. El script solo acepta la confirmación de un permiso que Jarvis ya te ha preguntado, de esa misma sesión, reciente y de un solo uso, así que una inyección de prompt no puede pedir una acción nueva «ya confirmada».
 - **Sin API de pago.** Los procesos de Claude se lanzan sin `ANTHROPIC_API_KEY` ni variables de Bedrock o Vertex, así que siempre usan la sesión de claude.ai.
 - **Privacidad.** El audio se transcribe en el PC. Lo que el micro oye sin «Jarvis» no se guarda: solo el número de palabras y el volumen máximo.
-- **Pensado para estar siempre encendido.** Arranca solo al iniciar sesión, un vigilante lo levanta si se cae cada 5 minutos, solo puede haber un oyente a la vez y libera RAM cuando hace falta.
+- **Pensado para estar siempre encendido.** Arranca solo al iniciar sesión, un vigilante lo levanta si se cae (revisa cada 2 minutos), solo puede haber un oyente a la vez y libera RAM cuando hace falta.
 
 ## Cómo funciona
 
@@ -50,10 +55,12 @@ flowchart LR
 ```
 
 1. **Oído.** `escucha.py` escucha el micro en local. Se activa solo con «Hola Jarvis» al principio de una frase (Whisper y similitud fonética). «Hey Jarvis» (openWakeWord) está apagado por defecto (`WAKE_BY_HEY_JARVIS`).
-2. **Cerebro.** Una sesión de `claude -p` en modo *stream-json* que nunca se cierra, con Sonnet, sin MCP ni plugins y con solo tres herramientas permitidas: búsqueda web, lectura web y `jarvis-herramienta`. Contesta en unos segundos y la voz empieza con la primera frase, sin esperar al resto.
-3. **Manos.** Lo que hay que *hacer* se lanza como `claude -p` aparte, con todo tu entorno de Claude Code, el modo de permisos `auto` y tu Chrome (`--chrome`). Las tareas de ejemplo tardaron una mediana de **30 s**.
-4. **Voz.** ElevenLabs sintetiza frase a frase mientras el cerebro escribe. Si falla, lee la respuesta la voz de Windows.
-5. **Reservas.** Si Sonnet falla o se llega al límite del plan, contesta Haiku por OpenRouter a través de la API de OpenJarvis.
+   Lo que le pides dentro de la conversación se transcribe con Whisper `small`, en la **NPU** si el PC la tiene (OpenVINO, 0,3–0,7 s por frase).
+2. **Cerebro.** Una sesión de `claude -p` en modo *stream-json* que nunca se cierra, con Sonnet, sin MCP ni plugins y con solo tres herramientas permitidas: búsqueda web, lectura web y `jarvis-herramienta`. La primera frase suele estar lista en ~1 s y la voz empieza con ella, sin esperar al resto.
+3. **Manos rápidas.** Lo simple (abrir, cerrar, música, volumen, carpetas, archivos, notas…) lo hace `bin/acciones_pc.py` directamente con la API de Windows, en 1–3 s.
+4. **Manos completas.** Lo demás lo hace un **trabajador siempre encendido** (`bin/trabajador_claude.py`): una sesión de Claude Code que se queda abierta, con todo tu entorno, el modo de permisos `auto` y tu Chrome (`--chrome`). Empieza en menos de 1 s, una consulta sencilla acaba en 7–9 s y recuerda las tareas anteriores. Si está ocupado, o la tarea es en un proyecto, va como `claude -p` aparte.
+5. **Voz.** ElevenLabs (`eleven_turbo_v2_5`) sintetiza frase a frase mientras el cerebro escribe. Si falla, lee la respuesta la voz de Windows.
+6. **Reservas.** Si Sonnet falla o se llega al límite del plan, contesta Haiku por OpenRouter a través de la API de OpenJarvis.
 
 Más detalle, con el flujo de confirmación y los procesos, en [docs/arquitectura.md](docs/arquitectura.md).
 
@@ -72,8 +79,10 @@ jarvis-claude-voice/
 ├── bin/                       # Jarvis: oyente, cerebro, tareas, vigilante y lanzadores
 │   ├── escucha.py             # Oyente manos libres (wake word, VAD, voz, barge-in, tareas)
 │   ├── cerebro_claude.py      # Sesión de Sonnet siempre abierta (suscripción)
-│   ├── tarea_claude.py        # Ejecuta una tarea con Claude Code en segundo plano
-│   ├── herramientas_voz.py    # Lo único que puede ejecutar el cerebro: agenda y encargar
+│   ├── acciones_pc.py         # Acciones al momento: apps, carpetas, música, volumen, archivos…
+│   ├── trabajador_claude.py   # Sesión de Claude Code siempre abierta para las tareas
+│   ├── tarea_claude.py        # Ejecuta una tarea aparte con Claude Code en segundo plano
+│   ├── herramientas_voz.py    # Lo único que puede ejecutar el cerebro: agenda, accion y encargar
 │   ├── ajustes.py             # Lee data/usuario.toml (nombre, perfil, carpetas)
 │   ├── vigilante.ps1          # Levanta la API, la web y el oyente si se caen
 │   └── …                      # micro, memoria de voz, RAM, arranque oculto
@@ -108,7 +117,7 @@ Resumen; el paso a paso completo, con lo que deberías ver en cada paso, está e
 
 ## Stack
 
-- **Python 3.11**: oyente y scripts. Usa `sounddevice`, `numpy`, `openwakeword`, `faster-whisper` y `livekit` (solo su cancelación de eco).
+- **Python 3.11**: oyente y scripts. Usa `sounddevice`, `numpy`, `openwakeword`, `faster-whisper`, `openvino-genai` (Whisper en la NPU), `pycaw` (volumen) y `livekit` (solo su cancelación de eco).
 - **Claude Code** (`claude -p`, *stream-json*, `--resume`, `--chrome`) con Sonnet por la suscripción.
 - **OpenJarvis**: API FastAPI, herramientas, conectores y web en React + Vite.
 - **TypeScript + Canvas**: HUD holográfico con datos reales del PC.
@@ -118,6 +127,7 @@ Resumen; el paso a paso completo, con lo que deberías ver en cada paso, está e
 ## Aprendizajes
 
 - **Una activación de voz no es una orden firmada.** Con el micro siempre abierto habrá falsas activaciones. Por eso lo irreversible pide confirmación, y la marca de confirmación la pone el código, no el texto dictado.
+- **No todo tiene que pasar por un agente.** Abrir Spotify con Claude Code tardaba 15–20 s; con una llamada directa a Windows, 1 s. El modelo decide qué hacer y el código lo hace.
 - **Que el sistema sea rápido de oír importa más que la velocidad del modelo.** Pasar de esperar la respuesta completa a hablar frase a frase notó más que cambiar de modelo.
 - **Los fallos de un asistente de voz son casi siempre de audio, no de IA.** Micrófonos que mandan ceros en silencio, frases cortadas a los 6 s, dos oyentes a la vez… el [historial](CHANGELOG.md) lo cuenta con detalle.
 - **`pythonw.exe` no siempre significa «sin ventana».** El del entorno virtual de uv es un lanzador que abre el `python.exe` con consola. Las tareas se lanzan con el `pythonw.exe` real.

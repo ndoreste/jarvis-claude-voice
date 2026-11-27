@@ -27,6 +27,7 @@ import difflib
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -48,6 +49,7 @@ import numpy as np
 import sounddevice as sd
 from openwakeword.model import Model
 
+from acciones_pc import duck_media, restore_media
 from ajustes import USUARIO
 from cerebro_claude import ClaudeBrain
 from escriba_activo import escriba_dictando
@@ -55,6 +57,7 @@ from memoria_voz import RESUME_REQUEST, VoiceMemory
 from eco_aec import EchoCanceller
 from microfono import FRAME, SAMPLE_RATE, Microphone, MicUnavailable
 from respuesta import Answer, speech_chunks
+from trabajador_claude import ensure_running as ensure_worker
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_PATH = ROOT / "data" / "escucha.log"
@@ -73,10 +76,18 @@ FLOOR_RISE = 0.02
 MIN_SPEECH_FRAMES = 3
 # Pausa que marca el final de la frase ([Nau] 0,7 → 0,6 → 0,5 el 09/11/2026). Si solo era una
 # pausa y el usuario sigue hablando, resumed_speech lo nota y vuelve a escuchar.
-SILENCE_S = 0.5
+# 0,5 → 0,4 el 24/11/2026 (-0,1 s por turno; la red de seguridad de arriba sigue).
+SILENCE_S = 0.4
+# [Nau] 26/11/2026: a los 0,15 s de pausa ya se empieza a transcribir (ver EarlyTranscript)
+EARLY_STT_SILENCE_S = 0.15
+EARLY_STT_TAIL_RATIO = 0.35  # sonido tras la anticipada por encima de esto (× umbral de voz): se descarta
 NO_SPEECH_S = 6.0
-FOLLOW_UP_S = 12.0  # margen para seguir hablando tras cada respuesta
+FOLLOW_UP_S = 20.0  # margen para seguir hablando tras cada respuesta ([Nau] 12 → 20 s el 26/11/2026)
 MAX_UTTERANCE_S = 20.0
+# [Nau] 26/11/2026: lo que Nau le pide se transcribe con Whisper «small»: entiende el habla a
+# ritmo normal (con «base», «Hola Jarvis, ábreme…» dicho seguido salía «Por la Jarvis…»).
+# Tarda ~1,2 s en vez de ~0,5 s (medido); Nau eligió entender mejor. Despertar sigue con «base».
+CONVERSATION_STT_MODEL = "small"
 
 HISTORY_TURNS = 20  # turnos que recuerda dentro de una misma conversación
 # Memoria persistente: cada conversación terminada se guarda aquí y solo se usa
@@ -135,6 +146,30 @@ INTERRUPTED_NOTE = f" [{USUARIO} me ha interrumpido aquí]"
 # [Nau] 09/11/2026: tareas que Jarvis encarga a Claude Code (herramienta encargar_a_claude)
 TASKS_DIR = ROOT / "data" / "tareas"
 TASK_CHECK_EVERY_S = 2.0
+# [Nau] 26/11/2026: con una tarea en marcha la conversación sigue abierta (wait_for_tasks)
+TASK_POLL_S = 2.0  # cada cuánto mira si la tarea ha acabado mientras escucha
+TASK_WAIT_MAX_S = 5 * 60  # como mucho; después se cierra y el resultado llega suelto, como antes
+TASK_PROGRESS_AFTER_S = 30.0  # si tarda más, avisa una vez de que sigue con ello
+TASK_PROGRESS_REPLY = "Sigo con ello, señor."
+TASK_STALE_S = 30 * 60  # como _STALE_S de claude_code.py: más tiempo «en curso» = proceso muerto
+STALE_CHECK_EVERY_S = 10 * 60
+# [Nau] 26/11/2026: en 14 de 20 despertares tras 15+ min parado hubo antes una frase corta sin
+# reconocer: ¿se pierde el principio de «Hola Jarvis» tras mucho silencio? Se apunta (sin texto)
+MISSED_CALL_MAX_WORDS = 5
+MISSED_CALL_WINDOW_S = 60.0
+# [Nau] 26/11/2026: en la conversación, lo que no lleva su nombre se confirma (screen_addressee)
+ADDRESS_QUESTION = "¿Es a mí, señor?"
+ADDRESS_NO_REPLY = "Entendido, señor."
+ADDRESS_QUIET_S = 20.0  # tras preguntar, no vuelve a preguntar en este rato
+ADDRESS_ANSWER_S = 10.0  # lo que diga en este rato tras la pregunta es la respuesta (va para él)
+ADDRESS_FOLLOW_S = 10.0  # si empieza a hablar en este rato tras su respuesta, va para él
+JUNK_TURNS_MAX = 2  # frases de ruido seguidas que no cierran la conversación
+YES_WORDS = {"si", "claro", "exacto", "correcto", "afirmativo", "efectivamente", "eso", "obvio"}
+NO_REPLY = re.compile(r"^(?:no|nada|tranquilo|olvidalo|dejalo|da igual|era otra|hablaba con)\b")
+# Palabras de la respuesta que no son una petición nueva («No, no era para ti, Jarvis»)
+ADDRESS_REPLY_FILLER = {"no", "si", "era", "es", "para", "ti", "a", "te", "contigo", "hablaba",
+                        "nada", "tranquilo", "senor", "con", "otra", "otro", "persona", "claro",
+                        "eso", "exacto", "correcto", "vale", "sigue", "tu", "olvidalo", "dejalo"}
 # [Nau] 09/11/2026: el cerebro es Sonnet por la suscripción (cerebro_claude.py); Haiku por
 # OpenRouter queda de reserva. Si el usuario vuelve a llamarle antes de 5 min, sigue el hilo.
 BRAIN = ClaudeBrain()
@@ -149,18 +184,45 @@ HALLUCINATIONS = re.compile(
     r"subt[ií]tulos|amara\.org|gracias por ver|suscr[ií]bete|pr[oó]ximo v[ií]deo|dale (?:a )?like"
     r"|^\W*$", re.IGNORECASE
 )
+# [Nau] 26/11/2026: con música Whisper entra en bucle («No, no, no…» ×200). Una palabra repetida
+# más de REPEAT_WORD_MAX veces seguidas (o 2–6 palabras más de REPEAT_PHRASE_MAX veces) se deja en
+# una; si lo repetido era casi todo (REPEAT_NOISE_RATIO), la frase entera se trata como ruido.
+REPEAT_WORD_MAX = 8
+REPEAT_PHRASE_MAX = 4
+REPEAT_PHRASE_MAX_WORDS = 6
+REPEAT_NOISE_RATIO = 0.6
+# [Nau] 26/11/2026: un fallo pasajero de la API (500 al reiniciarse) perdía la frase entera
+TRANSCRIBE_RETRY_S = 0.5
 THINK_TAGS = re.compile(r"<think>.*?</think>", re.DOTALL)
 # [Nau] Frases con las que el usuario cierra la conversación: basta con que la frase ACABE así
 # («Gracias Jarvis, adiós», «…puedes descansar, hasta luego Jarvis»). Se comparan sin
 # tildes, sin signos y sin el nombre. Las preguntas («¿cómo se dice adiós?») no cuentan.
 GOODBYE_END = re.compile(
-    r"(?:^|\s)(?:adios|hasta luego|hasta manana|hasta otra|hasta despues|hasta la proxima"
-    r"|chao|chau|nos vemos|descansa|descansar|eso es todo|eso era todo|nada mas|ya esta"
-    r"|ya no necesito nada|no necesito nada mas|buenas noches|me voy|a dormir|no gracias)$"
+    r"(?:^|\s)(?:adios|adio|hasta luego|hasta manana|hasta otra|hasta despues|hasta la proxima"
+    r"|chao|chau|nos vemos|descansa|descansar|descanza|descanzar|eso es todo|eso era todo"
+    r"|nada mas|ya esta|ya no necesito nada|no necesito nada mas|buenas noches|me voy"
+    r"|a dormir|puedes dormir|duermete|no gracias|hasta pronto|luego hablamos|hablamos luego"
+    r"|apagate|desconectate|gracias por todo|ya puedes irte|puedes irte|retirate|a descansar)$"
+    # [Nau] 25/11/2026: «duérmete», «hasta pronto». 26/11/2026: «adió» (Whisper se come la s),
+    # «descanzar», «puedes dormir», «apágate», «luego hablamos», «gracias por todo», «puedes irte»
 )
+# [Nau] 25/11/2026: la despedida solo cierra si la frase es corta (sin contar el nombre):
+# un «adiós» dicho a otra persona dentro de una frase larga no apaga a Jarvis.
+# 26/11/2026: 6 → 10 palabras («No, gracias, ya voy a descansar, hasta luego» no cerraba).
+GOODBYE_MAX_WORDS = 10
 # Palabras de cortesía que pueden ir detrás de la despedida («adiós, gracias, señor»)
 GOODBYE_TAIL = {"gracias", "muchas", "senor", "bueno", "vale", "ok", "okay", "perfecto",
-                "genial", "pues", "entonces", "ya", "eh"} | {USUARIO.casefold()}
+                "genial", "pues", "entonces", "ya", "eh", "venga", "nada"} | {USUARIO.casefold()}
+# [Nau] 26/11/2026: «Adiós, Jean-Pierre», «Adiós, YAMI»: el nombre mal oído detrás de una
+# despedida que ABRE una frase muy corta también cierra
+GOODBYE_START = re.compile(r"^(?:adios|adio|chao|chau|hasta luego|hasta manana|buenas noches)\b")
+GOODBYE_START_MAX_WORDS = 3
+GOODBYE_WORDS = {"adios", "adio", "chao", "chau"}
+GOODBYE_ADIOS_MAX_WORDS = 5
+GOODBYE_NAME_TAIL_MAX_WORDS = 6
+# «Vale, gracias Jarvis»: una frase que es SOLO agradecimiento también cierra
+THANKS_ONLY = {"gracias", "muchas", "vale", "perfecto", "genial", "ok", "okay", "bueno", "pues",
+               "a", "senor", "mil", "muy", "bien", "estupendo", "guay"}
 GOODBYE_REPLY = "A su disposición, señor."
 ERROR_REPLY = "Disculpe, señor, he tenido un problema técnico con esa petición. ¿Lo intentamos de otra forma?"
 # Lo que dice Jarvis (con la voz de respaldo) cuando ElevenLabs no puede sintetizar
@@ -191,6 +253,29 @@ NAME_SIMILARITY = 0.6
 # [Nau] 21/11/2026: la ÚNICA forma de despertarlo es «Hola Jarvis» (pedido por Nau; del 09/11
 # al 21/11 fue «¿Qué pasa, Jarvis?»). «Ola» es como Whisper escribe a veces «hola».
 CALL_WORDS = {"hola", "ola"}
+# [Nau] 26/11/2026: cómo escribe Whisper «hola» cuando Nau habla seguido («Por la Jarvis,
+# ábreme…», medido) o lo pega al nombre; solo valen justo delante del nombre y al principio
+CALL_LIKE_WORDS = CALL_WORDS | {"olla", "holla", "jola", "bola", "cola", "pola", "mola", "gola",
+                                "la", "olaa", "holaa", "hello", "holi"}
+CALL_SPLIT_LEADS = {"por", "o", "a"}  # «por la» / «o la» / «a la» = «hola» partido en dos
+# «Hola Javier», «Hola Travis»: si la frase es SOLO «hola» + nombre, el nombre puede parecerse menos
+SHORT_CALL_NAME_SIMILARITY = 0.6
+# Segunda opinión: si «base» oye algo como «Jarvis» al principio pero no la llamada entera,
+# se vuelve a transcribir ese trozo con «small» antes de darlo por perdido
+WAKE_RECHECK_MAX_S = 6.5
+# [Nau] 26/11/2026: reenganche con el hilo abierto (rejoin_by_name); frases más largas no cuentan.
+# 25 → 15 la misma noche: «…voy a mejorar este momento de Jarvis y aquí estoy con Jarvis
+# todavía» (hablando DE él) lo despertó. Ahora el nombre va primero (o tras REJOIN_LEADS) o
+# último (salvo cortesías de REJOIN_TAIL), y no cuenta detrás de una preposición.
+REJOIN_MAX_WORDS = 15
+REJOIN_LEADS = {"oye", "vale", "eh", "ey", "hey", "bueno", "venga", "pues", "y", "oiga"}
+REJOIN_TAIL = {"por", "favor", "porfa", "porfavor", "gracias"}
+# Órdenes de una palabra que, con su nombre, no son una simple llamada («Jarvis, pausa»)
+SHORT_ORDERS = {"pausa", "pausar", "para", "stop", "siguiente", "anterior", "musica", "play",
+                "continua", "sigue", "silencio", "calla", "callate", "volumen", "bloquea",
+                "bloquear", "sube", "baja"}
+NAME_PREPOSITIONS = {"de", "del", "con", "a", "al", "para", "sobre", "en", "por", "sin", "este",
+                     "ese", "el", "mi", "tu", "su", "que"}
 # Lo que puede ir antes del «hola» sin que deje de ser la llamada («Oye, hola Jarvis»)
 LEAD_WORDS = {"oye", "hey", "ey", "eh", "vale", "bueno", "pues", "venga", "oiga", "y", "a",
               "no", "buenas"}
@@ -263,10 +348,13 @@ def to_wav(pcm: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-def transcribe(pcm: np.ndarray) -> str:
+def transcribe(pcm: np.ndarray, model: str = "") -> str:
+    """model: '' = el rápido (base, para despertar); CONVERSATION_STT_MODEL para lo que se le pide."""
     boundary = uuid.uuid4().hex
+    fields = {"language": "es", **({"model": model} if model else {})}
     parts = [
-        f'--{boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nes\r\n'.encode(),
+        *(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+          for k, v in fields.items()),
         (
             f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
             f'filename="voz.wav"\r\nContent-Type: audio/wav\r\n\r\n'
@@ -275,10 +363,46 @@ def transcribe(pcm: np.ndarray) -> str:
         + b"\r\n",
         f"--{boundary}--\r\n".encode(),
     ]
-    body, _ = http(
-        "/v1/speech/transcribe", b"".join(parts), f"multipart/form-data; boundary={boundary}"
-    )
-    return str(json.loads(body).get("text", "")).strip()
+    payload = b"".join(parts)
+    content_type = f"multipart/form-data; boundary={boundary}"
+    try:
+        body, _ = http("/v1/speech/transcribe", payload, content_type)
+    except (urllib.error.URLError, OSError) as exc:
+        # [Nau] 26/11/2026: un reintento si la API falla un momento (500 o conexión cortada)
+        log.warning("La transcripción ha fallado (%s); reintento", exc)
+        time.sleep(TRANSCRIBE_RETRY_S)
+        body, _ = http("/v1/speech/transcribe", payload, content_type)
+    return drop_repetition(str(json.loads(body).get("text", "")).strip())
+
+
+def drop_repetition(text: str) -> str:
+    """[Nau] Quita los bucles de Whisper («no, no, no…» ×200); '' si la frase era solo eso.
+    Por privacidad solo se registra cuántas palabras se han quitado."""
+    words = text.split()
+    keys = [_plain(w.strip(".,;:!?¡¿…\"'")) for w in words]
+    keep = [True] * len(words)
+    for size in range(1, REPEAT_PHRASE_MAX_WORDS + 1):
+        limit = REPEAT_WORD_MAX if size == 1 else REPEAT_PHRASE_MAX
+        i = 0
+        while i + size <= len(keys):
+            gram = keys[i:i + size]
+            reps = 1
+            while keys[i + reps * size:i + (reps + 1) * size] == gram:
+                reps += 1
+            if reps > limit and any(gram):
+                for j in range(i + size, i + reps * size):
+                    keep[j] = False
+                i += reps * size
+            else:
+                i += 1
+    removed = keep.count(False)
+    if not removed:
+        return text
+    if removed / len(words) >= REPEAT_NOISE_RATIO:
+        log.info("Transcripción repetitiva descartada (%d palabras): es ruido", len(words))
+        return ""
+    log.info("Transcripción repetitiva: quito %d de %d palabras", removed, len(words))
+    return " ".join(w for w, k in zip(words, keep) if k)
 
 
 DAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
@@ -307,7 +431,8 @@ def now_context() -> dict:
             f"Si {USUARIO} te pide HACER algo en su ordenador o en sus cuentas (archivos, "
             "programas, correo, WhatsApp, Notion, Spotify, el navegador…), usa la "
             "herramienta encargar_a_claude con la orden completa y clara y contesta solo "
-            "que te pones con ello; no digas que no puedes. Habla siempre en primera "
+            "«Enseguida, señor.»; no digas que no puedes ni que ya estaba hecho (hazlo otra "
+            "vez: el usuario puede haberlo cerrado o borrado). Habla siempre en primera "
             "persona y no menciones nunca a Claude ni a Claude Code."
         ),
     }
@@ -618,20 +743,54 @@ def update_floor(floor: float | None, rms: float) -> float | None:
     return rms if rms < floor else floor + (rms - floor) * FLOOR_RISE
 
 
+class EarlyTranscript:
+    """[Nau] 26/11/2026: transcripción empezada en la primera pausa corta (EARLY_STT_SILENCE_S),
+    antes de dar la frase por acabada. Si el usuario vuelve a hablar se descarta; si no, cuando
+    se confirma el final ya lleva ese tiempo adelantado («small» tarda ~1,3 s, medido)."""
+
+    def __init__(self, pcm: np.ndarray) -> None:
+        self.text: str | None = None
+        self._done = threading.Event()
+        threading.Thread(target=self._run, args=(pcm,), daemon=True, name="stt-anticipado").start()
+
+    def _run(self, pcm: np.ndarray) -> None:
+        try:
+            self.text = transcribe(pcm, CONVERSATION_STT_MODEL)
+        except (urllib.error.URLError, OSError, KeyError, ValueError):
+            log.exception("Falló la transcripción anticipada")
+        finally:
+            self._done.set()
+
+    def running(self) -> bool:
+        return not self._done.is_set()
+
+    def result(self) -> str | None:
+        self._done.wait(HTTP_TIMEOUT_S)
+        return self.text
+
+
+_early_in_flight: EarlyTranscript | None = None  # la última anticipada (para no solapar dos)
+
+
 def record_utterance(
     stream: Microphone, no_speech_s: float, prefix: list[np.ndarray] | None = None,
-    floor: float | None = None,
+    floor: float | None = None, early: list[EarlyTranscript] | None = None,
 ) -> tuple[np.ndarray | None, float]:
     """Graba hasta que hay silencio tras hablar. Devuelve (audio o None si nadie habla, suelo de ruido).
 
     prefix: audio en el que ya se ha detectado voz (El usuario ha seguido hablando).
+    early: si se pasa una lista, se deja en ella la transcripción anticipada que siga valiendo.
     """
+    global _early_in_flight
     frames: list[np.ndarray] = list(prefix or [])
     frame_s = FRAME / SAMPLE_RATE
     speech_run = 0
     heard = bool(prefix)
     silent_s = 0.0
     elapsed = 0.0
+    pending: EarlyTranscript | None = None
+    pending_at = 0
+    quiet_s = 0.0
     while elapsed < MAX_UTTERANCE_S:
         frame = read_frame(stream)
         frames.append(frame)
@@ -642,14 +801,28 @@ def record_utterance(
             speech_run += 1
             heard = heard or speech_run >= MIN_SPEECH_FRAMES
             silent_s = 0.0
+            pending = None  # sigue hablando: la anticipada ya no vale
         else:
             speech_run = 0
             silent_s += frame_s
         floor = update_floor(floor, rms)
+        # Silencio de verdad (no la cola suave de una palabra): por debajo del mismo nivel con el
+        # que luego se comprueba que no ha seguido hablando
+        quiet_s = quiet_s + frame_s if rms <= EARLY_STT_TAIL_RATIO * speech_threshold(floor) else 0.0
+        if (early is not None and heard and pending is None and quiet_s >= EARLY_STT_SILENCE_S
+                and not (_early_in_flight and _early_in_flight.running())):
+            pending = _early_in_flight = EarlyTranscript(np.concatenate(frames))
+            pending_at = len(frames)
+        # Una sílaba final suave («…por la tarde») queda bajo el umbral de voz pero no está en
+        # la anticipada: si después suena algo más que el ruido de fondo, no vale
+        if pending is not None and len(frames) > pending_at and rms > EARLY_STT_TAIL_RATIO * speech_threshold(floor):
+            pending = None
         if heard and silent_s >= SILENCE_S:
             break
         if not heard and elapsed >= no_speech_s:
             return None, floor
+    if early is not None and heard and pending is not None:
+        early.append(pending)
     return (np.concatenate(frames) if heard else None), (floor or 0.0)
 
 
@@ -698,6 +871,8 @@ def say_chunks(chunks: Iterable[str], stream: Microphone | None = None,
         for chunk in source:
             if stop.is_set():
                 return
+            if not re.search(r"\w", chunk):
+                continue  # [Nau] 27/11/2026: el cerebro a veces cierra con «∎»; no se dice
             try:
                 _offer(ready, (chunk, synthesize(chunk), None), stop)
             except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -738,6 +913,18 @@ def is_goodbye(text: str) -> bool:
     if text.rstrip().endswith("?"):
         return False
     words = [_plain(w) for w in re.findall(r"[\w']+", text) if not is_jarvis(w)]
+    if len(words) > GOODBYE_MAX_WORDS:  # [Nau] 25/11/2026: frase larga, no es una despedida
+        return False
+    if "gracias" in words and all(w in THANKS_ONLY for w in words):
+        return True
+    if len(words) <= GOODBYE_START_MAX_WORDS and GOODBYE_START.search(" ".join(words)):
+        return True
+    # [Nau] 26/11/2026: «Adiós, ya lo vi.» no cerraba; con «adiós» delante basta una frase corta
+    if words and words[0] in GOODBYE_WORDS and len(words) <= GOODBYE_ADIOS_MAX_WORDS:
+        return True
+    # «…por cierto, adiós, YAMI»: «adiós» + el nombre mal oído al final de una frase corta
+    if 2 <= len(words) <= GOODBYE_NAME_TAIL_MAX_WORDS and words[-2] in GOODBYE_WORDS:
+        return True
     while words:
         if GOODBYE_END.search(" ".join(words)):
             return True
@@ -759,11 +946,12 @@ def looks_unfinished(text: str) -> bool:
 class Turn:
     """Lo que el usuario dice en un turno: el audio acumulado y su transcripción."""
 
-    def __init__(self, pcm: np.ndarray, floor: float) -> None:
+    def __init__(self, pcm: np.ndarray, floor: float, early: EarlyTranscript | None = None) -> None:
         self.pcm = pcm
         self.floor = floor
         self.heard_at = time.monotonic()  # el usuario acaba de callar: aquí empieza la espera
-        self.text = transcribe(pcm)
+        text = early.result() if early is not None else None
+        self.text = text if text is not None else transcribe(pcm, CONVERSATION_STT_MODEL)
         self.transcribed_s = time.monotonic() - self.heard_at
 
     def keep_listening(self, stream: Microphone, resumed: list[np.ndarray] | None = None) -> None:
@@ -779,7 +967,9 @@ class Turn:
             if more is None:
                 return
             self.pcm = np.concatenate([self.pcm, more])
-            self.text = transcribe(self.pcm)
+            # [Nau] 26/11/2026: con música, la frase entera puede salir en bucle (se descarta
+            # como ruido): entonces se queda lo que ya se había entendido
+            self.text = transcribe(self.pcm, CONVERSATION_STT_MODEL) or self.text
 
 
 def get_reply(messages: list[dict], model: str, text: str, recalled: dict | None) -> str | None:
@@ -830,6 +1020,7 @@ def deliver(stream: Microphone, messages: list[dict], text: str, answer: Answer,
         messages.append(recalled)
     messages.append({"role": "user", "content": text})
     messages.append({"role": "assistant", "content": reply + (INTERRUPTED_NOTE if heard else "")})
+    _addressee.replied_at = time.monotonic()
     return done_speaking(stream, heard)
 
 
@@ -853,18 +1044,116 @@ def is_own_echo(heard: str, said: str) -> bool:
     )
 
 
+class _Addressee:
+    """[Nau] 26/11/2026: ¿va dirigido a Jarvis lo que oye en la conversación?
+    pending: frase sin su nombre por la que ha preguntado «¿Es a mí, señor?».
+    ignore_others: Nau ha dicho que no; no pregunta más hasta que acabe la tarea o la charla."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.pending: str | None = None
+        self.ignore_others = False
+        self.asked_at = 0.0  # cuándo preguntó «¿Es a mí, señor?» por última vez
+        self.replied_at = 0.0  # cuándo acabó de contestarle (respuesta o aviso de tarea)
+
+    def follows_reply(self, spoke_at: float | None) -> bool:
+        """[Nau] 26/11/2026: si empieza a hablar poco después de que Jarvis le conteste, es la
+        charla con él (preguntaba «¿Es a mí?» antes de cada orden sin nombre)."""
+        # Sin límite por abajo: la grabación puede empezar antes de que acabe de cerrar su turno
+        # (tras «Enseguida, señor.» espera a que termine la acción), y eso también es seguirle
+        return (spoke_at is not None and self.replied_at > 0
+                and spoke_at - self.replied_at <= ADDRESS_FOLLOW_S)
+
+    def asked_recently(self) -> bool:
+        """[Nau] 26/11/2026: con música de fondo preguntaba dos veces en 4 s."""
+        return time.monotonic() - self.asked_at < ADDRESS_QUIET_S
+
+
+_addressee = _Addressee()
+
+
+def names_jarvis(text: str) -> bool:
+    return any(is_jarvis(w) for w in re.findall(r"[\w']+", text))
+
+
+def addresses_jarvis(text: str) -> bool:
+    """[Nau] 26/11/2026: ¿le habla A él? Su nombre detrás de una preposición («el código de
+    Jarvis», «hablaba con Jarvis») es hablar DE él: eso se pregunta con «¿Es a mí, señor?»."""
+    words = re.findall(r"[\w']+", text)
+    return any(is_jarvis(w) and (i == 0 or _plain(words[i - 1]) not in NAME_PREPOSITIONS)
+               for i, w in enumerate(words))
+
+
+def speak_short(stream: Microphone, text: str) -> Heard:
+    """Frase fija («¿Es a mí, señor?»): se guarda la primera vez y suena al instante."""
+    log.info("Jarvis: %s", text)
+    publish("speaking", text)
+    return done_speaking(stream, say_greeting(stream, text))
+
+
+def screen_addressee(stream: Microphone, messages: list[dict], text: str,
+                     interrupted: bool, spoke_at: float | None = None) -> tuple[str | None, Heard]:
+    """Devuelve la frase a la que contestar, o None si ha preguntado o no era para él.
+
+    Va dirigido a Jarvis si lleva su nombre, si le interrumpe mientras habla o si Jarvis
+    acaba de hacerle una pregunta. Si no, pregunta «¿Es a mí, señor?»: con un no, sigue a lo
+    suyo; con un sí, contesta a la frase que había oído."""
+    words = [_plain(w) for w in re.findall(r"[\w']+", text) if not is_jarvis(w)]
+    if _addressee.pending is not None:
+        pending, _addressee.pending = _addressee.pending, None
+        content = [w for w in words if w not in ADDRESS_REPLY_FILLER]
+        if words and NO_REPLY.match(" ".join(words)) and len(content) < 2:
+            _addressee.ignore_others = True
+            log.info("No era para mí: sigo a lo mío y no pregunto más hasta que acabe")
+            return None, speak_short(stream, ADDRESS_NO_REPLY)
+        if words and words[0] in YES_WORDS:
+            log.info("Sí era para mí")
+            _addressee.asked_at = 0.0  # confirmado: la siguiente frase sin nombre se vuelve a preguntar
+            return (f"{pending} {text}" if len(content) >= 2 else pending), None
+        # [Nau] 26/11/2026: lo que contesta justo después de la pregunta va para él aunque no
+        # sea «sí» (repitió «Pon música» y se ignoraba durante 20 s)
+        if time.monotonic() - _addressee.asked_at <= ADDRESS_ANSWER_S:
+            log.info("Me contesta a «¿Es a mí?»: era para mí")
+            _addressee.asked_at = 0.0
+            return text, None
+        # Fuera de ese rato: es una frase nueva y se mira como cualquier otra
+    if addresses_jarvis(text) or interrupted or _last_said(messages).rstrip().endswith("?"):
+        return text, None
+    if _addressee.follows_reply(spoke_at) and not _addressee.ignore_others:
+        log.info("Me habla justo después de mi respuesta: es para mí")
+        return text, None
+    if _addressee.ignore_others:
+        # Privacidad: no era para él, no se registra el texto
+        log.info("Frase sin mi nombre (%d palabras): ya me dijo que no era para mí", len(words))
+        return None, None
+    if _addressee.asked_recently():
+        log.info("Frase sin mi nombre (%d palabras): acabo de preguntar, no repito", len(words))
+        return None, None
+    _addressee.pending = text
+    _addressee.asked_at = time.monotonic()
+    log.info("Frase sin mi nombre (%d palabras): pregunto si es para mí", len(words))
+    return None, speak_short(stream, ADDRESS_QUESTION)
+
+
 def respond(stream: Microphone, messages: list[dict], model: str, turn: Turn,
             interrupted: bool = False) -> tuple[bool, Heard]:
     """Responde cuando el usuario ha terminado de hablar. False si se despide o no dice nada útil."""
     resumed = None
     answer, first, recalled = None, None, None
+    screened = False
     publish("thinking", "")
     for _ in range(MAX_REASKS + 1):
         turn.keep_listening(stream, resumed)
         publish("thinking", turn.text)
         if not useful(turn.text):
             log.info("Ignorado (sin texto útil): %r", turn.text)
-            return False, None
+            # [Nau] 26/11/2026: un «¡Suscríbete!» inventado por Whisper cerraba la charla;
+            # ahora sigue escuchando, salvo si solo llega ruido varias veces seguidas
+            _end.junk += 1
+            return _end.junk <= JUNK_TURNS_MAX, None
+        _end.junk = 0
         if interrupted and is_own_echo(turn.text, _last_said(messages)):
             log.info("Lo que me interrumpió era mi propio eco (%r): no contesto y sigo escuchando", turn.text)
             _echo.missed()
@@ -874,13 +1163,25 @@ def respond(stream: Microphone, messages: list[dict], model: str, turn: Turn,
             log.info("%s: %s (solo me pide que pare: me callo y escucho)", USUARIO, turn.text)
             publish("listening", "")
             return True, None
-        interrupted = False
+        was_interrupted, interrupted = interrupted, False
         if is_goodbye(turn.text):
+            _end.goodbye = True
             log.info("%s: %s (fin de la conversación)", USUARIO, turn.text)
             publish("speaking", GOODBYE_REPLY)
             say(GOODBYE_REPLY)
             flush(stream)
             return False, None
+        # [Nau] 26/11/2026: solo la primera vez; si siguió hablando, la frase ya se aceptó
+        # (al volver a mirarla sin la pregunta pendiente se perdía «Sí… pon música»)
+        if not screened:
+            screened = True
+            spoke_at = turn.heard_at - len(turn.pcm) / SAMPLE_RATE  # cuándo empezó a hablar
+            question, heard = screen_addressee(stream, messages, turn.text, was_interrupted,
+                                               spoke_at)
+            if question is None:  # ha preguntado «¿Es a mí, señor?» o no era para él
+                publish("listening", "")
+                return True, heard
+            turn.text = question
         recalled = MEMORY.recall(turn.text) if RESUME_REQUEST.search(turn.text) else None
         answer = start_answer(messages, model, turn.text, recalled)
         first = next(answer, None)
@@ -906,13 +1207,15 @@ def handle_turn(stream: Microphone, messages: list[dict], model: str, wait_s: fl
     """Graba lo que dice el usuario y lo responde. False si el usuario calla o se despide.
 
     prefix: lo que el usuario dijo al interrumpir a Jarvis (su turno empieza ahí)."""
-    pcm, floor = record_utterance(stream, wait_s, prefix)
+    early: list[EarlyTranscript] = []
+    pcm, floor = record_utterance(stream, wait_s, prefix, early=early)
     if pcm is None:
         return False, None
     if escriba_dictando():
         log.info("El usuario está dictando con Escriba: cierro la conversación sin responder")
         return False, None
-    return respond(stream, messages, model, Turn(pcm, floor), interrupted=prefix is not None)
+    turn = Turn(pcm, floor, early[0] if early else None)
+    return respond(stream, messages, model, turn, interrupted=prefix is not None)
 
 
 def finished_tasks() -> list[dict]:
@@ -937,23 +1240,48 @@ def finished_tasks() -> list[dict]:
     return done
 
 
+def expire_stale_tasks() -> None:
+    """[Nau] 26/11/2026: una tarea «en curso» de hace más de TASK_STALE_S se da por perdida (su
+    proceso murió; una llevaba un día así). Se marca como anunciada para no leerla de golpe."""
+    now = time.time()
+    for path in TASKS_DIR.glob("*.json"):
+        try:
+            task = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (task.get("estado") not in ("pendiente", "en_curso")
+                or now - float(task.get("creada") or 0) < TASK_STALE_S):
+            continue
+        task.update(estado="error", anunciado=True, terminada=now,
+                    resultado="Se quedó colgada y la di por perdida.")
+        tmp = path.with_suffix(".caducada")
+        try:
+            tmp.write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+            log.info("Tarea %s colgada desde hace más de %d min: la doy por perdida",
+                     task.get("id"), TASK_STALE_S // 60)
+        except OSError:
+            log.exception("No se pudo cerrar la tarea colgada %s", path.name)
+
+
 def task_announcement(task: dict) -> tuple[str, dict]:
     """Lo que Jarvis dice al acabar una tarea y el contexto para seguir hablando de ella."""
     result = str(task.get("resultado") or "").strip()
     fact = result.rstrip(".")  # para citarlo dentro de otra frase
     session = task.get("session_id") or ""
     order = task.get("tarea", "")
+    # [Nau] 26/11/2026: «Ya está, señor.» en vez de «Nau, ya está.», como el resto de frases fijas
     if task.get("estado") == "error":
-        text = f"{USUARIO}, no he podido terminar lo que me pediste. {result}"
+        text = f"Disculpa, señor, no he podido terminar lo que me pediste. {result}"
         note = f"La tarea «{order}» ha fallado: {fact}."
     elif task.get("confirmar"):
-        text = f"{USUARIO}, antes de seguir necesito tu permiso. {result} ¿Lo hago?"
+        text = f"Antes de seguir necesito tu permiso, señor. {result} ¿Lo hago?"
         note = (f"Tu tarea en segundo plano «{order}» espera el permiso de {USUARIO}. Lo que harás: "
                 f"{fact}. Si {USUARIO} dice que sí, vuelve a encargarla con "
                 f"sesion=\"{session}\", confirmado=true y tarea=\"Sí, adelante, hazlo.\". "
                 "Si dice que no o duda, no la llames y díselo.")
     else:
-        text = f"{USUARIO}, ya está. {result}"
+        text = f"Ya está, señor. {result}"
         note = f"Has terminado en segundo plano la tarea «{order}»: {fact}."
     if session:
         note += (f" Si {USUARIO} quiere cambiar o seguir con esa tarea, vuelve a encargarla "
@@ -961,16 +1289,69 @@ def task_announcement(task: dict) -> tuple[str, dict]:
     return text, {"role": "system", "content": note}
 
 
+class _EndReason:
+    """[Nau] Por qué acabó el último turno: si fue una despedida, no se espera a las tareas.
+    junk: turnos seguidos que solo traían ruido o frases inventadas por Whisper."""
+    goodbye = False
+    junk = 0
+
+
+_end = _EndReason()
+
+
+def tasks_in_progress() -> bool:
+    """¿Hay alguna tarea encargada hace poco que aún no ha terminado?"""
+    now = time.time()
+    for path in TASKS_DIR.glob("*.json"):
+        try:
+            task = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (task.get("estado") in ("pendiente", "en_curso")
+                and now - float(task.get("creada") or 0) < TASK_WAIT_MAX_S):
+            return True
+    return False
+
+
+def wait_for_tasks(stream: Microphone, messages: list[dict], model: str) -> tuple[bool, Heard]:
+    """[Nau] 26/11/2026: con una tarea en marcha la conversación no se cierra por silencio
+    (antes se cerraba a los 20 s y el resultado llegaba suelto). Se sigue escuchando a ratos
+    cortos; si habla, se le contesta; si la tarea acaba, se cuenta y la charla sigue."""
+    log.info("Tarea en marcha: mantengo la conversación abierta")
+    publish("listening", "")
+    started = time.monotonic()
+    told_progress = False
+    while tasks_in_progress() and time.monotonic() - started < TASK_WAIT_MAX_S:
+        _end.goodbye = False
+        keep_going, heard = handle_turn(stream, messages, model, TASK_POLL_S, None)
+        if keep_going or _end.goodbye:
+            return keep_going, heard
+        done = finished_tasks()
+        if done:
+            return True, announce_tasks(stream, messages, done)
+        if not told_progress and time.monotonic() - started >= TASK_PROGRESS_AFTER_S:
+            told_progress = True
+            log.info("Jarvis: %s", TASK_PROGRESS_REPLY)
+            publish("speaking", TASK_PROGRESS_REPLY)
+            heard = done_speaking(stream, say(TASK_PROGRESS_REPLY, stream))
+            if heard is not None:
+                return True, heard
+    done = finished_tasks()  # justo acaba al salir del bucle
+    return (True, announce_tasks(stream, messages, done)) if done else (False, None)
+
+
 def announce_tasks(stream: Microphone, messages: list[dict], tasks: list[dict]) -> Heard:
     """Cuenta al usuario cómo han acabado las tareas que encargó a Claude Code."""
     heard = None
     for task in tasks:
+        _addressee.ignore_others = False  # acabó la tarea: vuelve a preguntar si no lleva su nombre
         text, note = task_announcement(task)
         log.info("Jarvis (tarea %s): %s", task.get("id"), text)
         messages.extend([note, {"role": "assistant", "content": text}])
         BRAIN.note(f"{note['content']} Ya se lo has dicho a {USUARIO} así: «{text}»")
         publish("speaking", text)
         heard = done_speaking(stream, say(text, stream))
+        _addressee.replied_at = time.monotonic()
         if heard is not None:
             break  # el usuario interrumpe: las demás se cuentan después
     return heard
@@ -989,6 +1370,8 @@ def conversation(stream: Microphone, model: str, first_question: str = "",
     messages = [] if messages is None else messages
     del messages[: max(0, len(messages) - 2 * HISTORY_TURNS)]
     first_new = len(messages)
+    _addressee.reset()
+    _end.junk = 0
     try:
         if tasks:
             heard = announce_tasks(stream, messages, tasks)
@@ -1009,7 +1392,10 @@ def conversation(stream: Microphone, model: str, first_question: str = "",
         while True:
             if heard is None:
                 heard = announce_tasks(stream, messages, finished_tasks())
+            _end.goodbye = False
             keep_going, heard = handle_turn(stream, messages, model, FOLLOW_UP_S, heard)
+            if not keep_going and not _end.goodbye and tasks_in_progress():
+                keep_going, heard = wait_for_tasks(stream, messages, model)
             if not keep_going:
                 break
         winsound.Beep(440, 120)
@@ -1054,16 +1440,123 @@ def _wake_hit(text: str) -> re.Match | None:
     «Oye, hola Jarvis» sí; «¿Qué pasa, Jarvis?», «Jarvis, mira…» o hablar de él a mitad
     de frase, no."""
     words = list(re.finditer(r"[\w']+", text))
+    short_call = len(words) <= 3  # solo «(oye) hola Jarvis»: el nombre puede parecerse menos
     for i, match in enumerate(words):
-        if i < 1 or not is_jarvis(match.group()):
+        name = _plain(match.group())
+        # «Holajarvis» / «Olajarvis»: Whisper lo junta todo
+        if any(name.startswith(c) and is_jarvis(name[len(c):]) for c in ("hola", "ola")):
+            first = i
+        elif i >= 1 and _plain(words[i - 1].group()) in CALL_LIKE_WORDS and (
+                is_jarvis(match.group()) or (short_call and _sounds_like_jarvis(name))):
+            first = i - 1
+            # «Por la Jarvis»: «hola» partido en dos palabras
+            if (_plain(words[first].group()) == "la" and first >= 1
+                    and _plain(words[first - 1].group()) in CALL_SPLIT_LEADS):
+                first -= 1
+        else:
             continue
-        if _plain(words[i - 1].group()) not in CALL_WORDS:
-            continue
-        start = max((m.end() for m in re.finditer(r"[.?!¿¡…;]", text[:words[i - 1].start()])), default=0)
-        before = re.findall(r"[\w']+", text[start:words[i - 1].start()])
+        start = max((m.end() for m in re.finditer(r"[.?!¿¡…;]", text[:words[first].start()])), default=0)
+        before = re.findall(r"[\w']+", text[start:words[first].start()])
         if all(_plain(w) in LEAD_WORDS for w in before):
             return match
     return None
+
+
+def _sounds_like_jarvis(word: str) -> bool:
+    """«Javier», «Travis», «Jarbas»: vale solo en una llamada corta («Hola Javier.»)."""
+    return (4 <= len(word) <= 7
+            and difflib.SequenceMatcher(None, word, "jarvis").ratio() >= SHORT_CALL_NAME_SIMILARITY)
+
+
+DIAGNOSTIC_FILE = ROOT / "data" / "diagnostico-voz.txt"
+DIAGNOSTIC_MAX_S = 10 * 60
+DIAGNOSTIC_DIR = ROOT / "data" / "diagnostico-voz"  # audios del diagnóstico (se borran al terminar)
+
+
+def diagnostic_mode() -> bool:
+    """[Nau] ¿Hay un diagnóstico de voz pedido por Nau y reciente? Caduca solo a los 10 min
+    (y se borra el archivo), para que el registro vuelva a no guardar lo que se oye."""
+    try:
+        age = time.time() - DIAGNOSTIC_FILE.stat().st_mtime
+    except OSError:
+        return False
+    if age <= DIAGNOSTIC_MAX_S:
+        return True
+    DIAGNOSTIC_FILE.unlink(missing_ok=True)
+    shutil.rmtree(DIAGNOSTIC_DIR, ignore_errors=True)
+    log.info("Diagnóstico de voz terminado: vuelvo a no registrar lo que oigo")
+    return False
+
+
+def called(text: str) -> str | None:
+    """¿Le llaman? «Hola Jarvis» siempre; justo después de una conversación, también su
+    nombre al principio o al final de la frase (rejoin_by_name)."""
+    question = wake_by_name(text)
+    if question is None and _thread.active() and not is_goodbye(text):
+        # [Nau] 26/11/2026: «Adiós, Jarvis» dicho tarde (ya dormido) no lo vuelve a despertar
+        question = rejoin_by_name(text)
+    return question
+
+
+def worth_second_opinion(text: str, segment: np.ndarray) -> bool:
+    """[Nau] 26/11/2026: ¿parece una llamada mal transcrita? Frase corta que empieza por algo
+    como «hola», o que tiene algo como «Jarvis» al principio, en un trozo no muy largo."""
+    if len(segment) / SAMPLE_RATE > WAKE_RECHECK_MAX_S:
+        return False
+    words = [_plain(w) for w in re.findall(r"[\w']+", text)]
+    starts_like_call = bool(words) and words[0] in CALL_LIKE_WORDS and len(words) <= 4
+    # Con el hilo abierto también vale el nombre al final («…ponme música, Jarvis»)
+    ends_like_call = _thread.active() and bool(words) and any(
+        is_jarvis(w) or _sounds_like_jarvis(w) for w in words[-2:])
+    return starts_like_call or ends_like_call or mentions_jarvis_early(text)
+
+
+def mentions_jarvis_early(text: str) -> bool:
+    """¿Hay algo parecido a «Jarvis» entre las 3 primeras palabras? (para la segunda opinión)"""
+    words = [_plain(w) for w in re.findall(r"[\w']+", text)[:3]]
+    return any(is_jarvis(w) or _sounds_like_jarvis(w) or w.endswith(("jarvis", "arvis"))
+               for w in words)
+
+
+def rejoin_by_name(text: str) -> str | None:
+    """[Nau] 26/11/2026: poco después de una conversación (hilo abierto), basta con que la frase
+    EMPIECE o ACABE con su nombre («Jarvis, ¿cuánto falta?», «…ponme música, Jarvis»), sin el
+    «Hola»: Nau ahora le habla así y, si la charla ya se había cerrado, no despertaba."""
+    words = list(re.finditer(r"[\w']+", text))
+    if not words or len(words) > REJOIN_MAX_WORDS:
+        return None
+    if not (_name_opens(words) or _name_closes(words)):
+        return None
+    rest = " ".join(w.group() for w in words if not is_jarvis(w.group()))
+    if _is_short_order(rest):
+        return text.strip()
+    if len(rest.split()) < 2 or PRESENCE_CHECK.fullmatch(_plain(rest)):
+        return ""
+    return text.strip()
+
+
+def _is_short_order(rest: str) -> bool:
+    """[Nau] 26/11/2026: «Pausa, Jarvis» es una orden, no solo una llamada (saludaba)."""
+    return _plain(rest.strip(" ,.;:!?¡¿")) in SHORT_ORDERS
+
+
+def _name_opens(words: list[re.Match]) -> bool:
+    """«Jarvis, …» u «Oye, Jarvis, …»: el nombre abre la frase."""
+    first = [w.group() for w in words[:2]]
+    return is_jarvis(first[0]) or (len(first) == 2 and _plain(first[0]) in REJOIN_LEADS
+                                   and is_jarvis(first[1]))
+
+
+def _name_closes(words: list[re.Match]) -> bool:
+    """«…ponme música, Jarvis (por favor)»: el nombre cierra la frase y no va tras una
+    preposición («…aquí estoy con Jarvis» habla DE él, no le llama)."""
+    plain = [_plain(w.group()) for w in words]
+    while plain and plain[-1] in REJOIN_TAIL:
+        plain.pop()
+        words = words[:-1]
+    if not words or not is_jarvis(words[-1].group()):
+        return False
+    return len(plain) < 2 or plain[-2] not in NAME_PREPOSITIONS
 
 
 def wake_by_name(text: str) -> str | None:
@@ -1072,6 +1565,8 @@ def wake_by_name(text: str) -> str | None:
     if hit is None:
         return None
     rest = text[hit.end():].strip(" ,.;:!?¡¿")
+    if _is_short_order(rest):
+        return rest
     # «Hola Jarvis, ¿estás por ahí?»: solo le llama → saludo fijo
     if len(rest.split()) < 2 or PRESENCE_CHECK.fullmatch(_plain(rest)):
         return ""
@@ -1136,6 +1631,10 @@ class ConversationThread:
     def touch(self) -> None:
         self._expires = time.monotonic() + CONTINUE_WINDOW_S
 
+    def active(self) -> bool:
+        """¿Ha habido conversación hace menos de CONTINUE_WINDOW_S?"""
+        return self._expires is not None and time.monotonic() < self._expires
+
     def expire_if_old(self) -> None:
         if self._expires is not None and time.monotonic() >= self._expires:
             self._expires = None
@@ -1147,6 +1646,15 @@ class ConversationThread:
 _thread = ConversationThread()
 
 
+def onset_ratio(segment: np.ndarray) -> float:
+    """Volumen de los primeros 0,1 s respecto al de toda la frase. Con el preroll, una frase
+    entera empieza en silencio (cerca de 0); cerca de 1 o más, el audio llegó ya empezado."""
+    head = segment[: SAMPLE_RATE // 10].astype(np.float64)
+    whole = segment.astype(np.float64)
+    total = float(np.sqrt(np.mean(whole ** 2))) if whole.size else 0.0
+    return float(np.sqrt(np.mean(head ** 2))) / total if total and head.size else 0.0
+
+
 def listen(stream: Microphone, wake: Model, model_name: str) -> None:
     """Bucle principal: espera a oír su nombre y lleva la conversación."""
     segmenter = Segmenter()
@@ -1155,6 +1663,8 @@ def listen(stream: Microphone, wake: Model, model_name: str) -> None:
     last_sound = time.monotonic()
     deaf_until = 0.0  # [Nau] hasta cuándo se ignora lo oído por un dictado de Escriba
     last_task_check = time.monotonic()
+    last_stale_check = 0.0  # la primera vuelta ya limpia las tareas colgadas
+    missed: tuple[float, int, float] | None = None  # última frase corta que no le despertó
     log.info("Escuchando «Hola Jarvis» (cerebro Sonnet; reserva %s)", model_name)
     publish("idle", "")
     while True:
@@ -1195,27 +1705,67 @@ def listen(stream: Microphone, wake: Model, model_name: str) -> None:
             except (urllib.error.URLError, OSError, KeyError, ValueError):
                 log.exception("No se pudo transcribir una frase")
                 heard = ""
-            question = wake_by_name(heard) if useful(heard) else None
+            question = called(heard) if useful(heard) else None
+            if question is None and useful(heard) and worth_second_opinion(heard, segment):
+                second = transcribe(segment, CONVERSATION_STT_MODEL)
+                question = called(second) if useful(second) else None
+                if question is not None:  # va dirigido a él: se puede registrar
+                    log.info("Segunda opinión: %r → %r", heard, second)
+                    heard = second
+                elif diagnostic_mode() or names_jarvis(heard) or names_jarvis(second):
+                    # Lleva su nombre: le estaban llamando y no lo ha reconocido (se registra
+                    # para poder arreglarlo; lo que no le nombra sigue sin guardarse)
+                    log.info("Llamada no reconocida: %r / %r", heard, second)
+                else:  # privacidad (08/11): sin el texto de lo que no era para él
+                    log.info("Segunda opinión sin llamada (%d palabras)", len(second.split()))
             if question is not None:
                 log.info("Activado por nombre: %r", heard)
+                if missed is not None and time.monotonic() - missed[0] <= MISSED_CALL_WINDOW_S:
+                    log.info("Posible llamada perdida: %d palabras hace %.0f s sin despertar "
+                             "(arranque del audio %.2f; cerca de 1 = empezó cortado)",
+                             missed[1], time.monotonic() - missed[0], missed[2])
+                missed = None
+            elif diagnostic_mode():
+                # [Nau] 26/11/2026: SOLO con data\diagnostico-voz.txt (lo crea Claude a petición
+                # de Nau, caduca a los 10 min): el texto, para ver por qué no despierta
+                log.info("DIAGNÓSTICO oído: %r (pico %.3f)", heard, float(np.abs(segment).max()) / 32768)
+                DIAGNOSTIC_DIR.mkdir(exist_ok=True)
+                (DIAGNOSTIC_DIR / f"{time.strftime('%H%M%S')}.wav").write_bytes(to_wav(segment))
             else:
                 # Solo métricas: lo que no va dirigido a Jarvis no se guarda (privacidad)
                 log.info("Oído (sin «Jarvis»): %d palabras (pico %.3f)",
                          len(heard.split()), float(np.abs(segment).max()) / 32768)
+                if len(heard.split()) <= MISSED_CALL_MAX_WORDS:
+                    missed = (time.monotonic(), len(heard.split()), onset_ratio(segment))
         # [Nau] Tarea de Claude Code terminada: se avisa si nadie está hablando
         if question is None and not segmenter.frames and now - last_task_check >= TASK_CHECK_EVERY_S:
             last_task_check = now
+            if now - last_stale_check >= STALE_CHECK_EVERY_S:
+                last_stale_check = now
+                expire_stale_tasks()
             tasks = finished_tasks()
         if question is None and not tasks:
             _thread.expire_if_old()
             continue
 
+        # [Nau] 26/11/2026: el trabajador de tareas se enciende ya, para que si le pide algo
+        # empiece al momento (se apaga solo tras 15 min sin tareas)
+        try:
+            ensure_worker()
+        except OSError:
+            log.exception("No arranca el trabajador de tareas")
+        # [Nau] 26/11/2026: la música baja mientras conversa (se le oye y no se confunde)
+        if duck_media():
+            log.info("Bajo la música mientras hablamos")
         try:
             conversation(stream, model_name, question or "", tasks, _thread.messages())
         except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
             log.exception("Fallo en la conversación: %s", exc)
             winsound.Beep(300, 300)
             flush(stream)
+        finally:
+            if restore_media():
+                log.info("Música a su volumen")
         _thread.touch()
         wake.reset()
         segmenter = Segmenter()
@@ -1224,8 +1774,19 @@ def listen(stream: Microphone, wake: Model, model_name: str) -> None:
         last_sound = time.monotonic()
 
 
+def warm_up_conversation_stt() -> None:
+    """[Nau] 26/11/2026: carga «small» en la API de antemano (la primera vez tarda unos segundos)."""
+    try:
+        transcribe(np.zeros(SAMPLE_RATE, dtype=np.int16), CONVERSATION_STT_MODEL)
+        log.info("Transcripción de conversación lista (Whisper %s)", CONVERSATION_STT_MODEL)
+    except (urllib.error.URLError, OSError, KeyError, ValueError):
+        log.exception("No se pudo precargar Whisper %s", CONVERSATION_STT_MODEL)
+
+
 def run() -> None:
+    restore_media()  # si el oyente se cayó en plena charla, la música no se queda baja
     wait_for_api()
+    threading.Thread(target=warm_up_conversation_stt, daemon=True, name="stt-small").start()
     try:
         BRAIN.start()  # en caliente para la primera pregunta
     except Exception:  # noqa: BLE001 - sin Sonnet, Jarvis contesta con la reserva Haiku

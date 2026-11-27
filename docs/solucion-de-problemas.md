@@ -30,6 +30,8 @@
 | Con altavoz se corta solo o no oye el «para» | Falta la cancelación de eco: el log de arranque dice «cancelación de eco NO disponible» (p. ej. tras un `uv sync`, que quita `livekit`) | En `src\`, `uv pip install livekit==1.2.1` y reinicia el oyente. Sin ella, con altavoz solo le corta una orden de parar («para», «espera»…) |
 | La reserva local (Ollama) no responde | Ollama escucha en el 11434 aunque `OLLAMA_HOST` diga otro puerto | Usa `http://127.0.0.1:11434` en `config.toml` |
 | `jarvis connect gcalendar` da error 400 «response_type» | `cmd /c start` cortaba la URL en el primer `&` | Ya está resuelto en `core/utils.py` (`os.startfile`) |
+| Tras mucho rato en silencio, el primer «Hola Jarvis» no le despierta y el segundo sí | Algunos auriculares USB (p. ej. Yealink UH34) mandan ceros exactos en silencio y tardan un instante en abrir el micro al hablar: el principio de la primera frase se pierde. Se ve en el log como «Posible llamada perdida» | Es del propio auricular, no de Windows ni de Jarvis: repite la llamada. Si te pasa mucho, prueba otro micro |
+| La música no baja mientras hablas o el volumen va a saltos | Falta `pycaw` (no está en `pyproject.toml`, así que un `uv sync` lo quita) | En `src\`, `uv pip install pycaw==20240210` y reinicia el oyente |
 | Las tareas dicen «no encuentro el proyecto» | El nombre dicho no se parece a ninguna carpeta | Revisa `proyectos` en `data\usuario.toml`, o di el nombre como se llama la carpeta |
 
 ## Reiniciar a mano

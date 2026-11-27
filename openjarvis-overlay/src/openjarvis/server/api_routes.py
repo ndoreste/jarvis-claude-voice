@@ -1004,6 +1004,9 @@ async def transcribe_speech(request: Request):
 
     audio_bytes = await audio_file.read()
     language = form.get("language")
+    # [Nau] 26/11/2026: el oyente pide «small» para la conversación (faster-whisper)
+    model_size = str(form.get("model") or "")
+    extra = {"model_size": model_size} if model_size and backend.backend_id == "faster-whisper" else {}
 
     # Detect format from filename
     filename = getattr(audio_file, "filename", "audio.wav")
@@ -1015,6 +1018,7 @@ async def transcribe_speech(request: Request):
             audio_bytes,
             format=ext,
             language=language or None,
+            **extra,
         )
     except Exception as exc:
         logger.exception("Speech transcription failed")

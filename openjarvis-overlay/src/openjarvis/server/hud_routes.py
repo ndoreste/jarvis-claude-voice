@@ -80,6 +80,7 @@ def _powershell(command: str, timeout: float = 8) -> str:
     result = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
         capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW, check=False,
+        encoding="oem", errors="replace",  # [Nau] 26/11/2026: la consola no escribe en UTF-8
     )
     return result.stdout.strip()
 
@@ -109,7 +110,7 @@ class _SlowSampler:
     @staticmethod
     def _wifi() -> dict[str, Any] | None:
         try:
-            out = subprocess.run(["netsh", "wlan", "show", "interfaces"], capture_output=True, text=True,
+            out = subprocess.run(["netsh", "wlan", "show", "interfaces"], capture_output=True, text=True, encoding="oem", errors="replace",
                                  timeout=5, creationflags=NO_WINDOW, check=False).stdout
         except (OSError, subprocess.SubprocessError):
             return None
@@ -299,7 +300,7 @@ async def power_action(body: PowerRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Acción no válida")
     if body.accion in ("reiniciar", "apagar") and not body.confirmado:
         raise HTTPException(status_code=400, detail="Falta la confirmación")
-    result = subprocess.run(command, capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW, check=False)
+    result = subprocess.run(command, capture_output=True, text=True, encoding="oem", errors="replace", timeout=10, creationflags=NO_WINDOW, check=False)
     logger.warning("HUD: acción de energía «%s» (código %s)", body.accion, result.returncode)
     if result.returncode != 0 and body.accion != "cancelar":
         raise HTTPException(status_code=500, detail=result.stderr.strip() or "No se pudo ejecutar")

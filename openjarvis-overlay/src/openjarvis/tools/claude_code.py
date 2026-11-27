@@ -2,7 +2,7 @@
 
 Jarvis (Haiku) la usa cuando el usuario pide HACER algo en su ordenador o en sus cuentas.
 Crea data/tareas/<id>.json y lanza bin/tarea_claude.py sin ventana; vuelve al momento
-para que Jarvis diga «me pongo con ello». Cuando Claude Code termina, el oyente
+para que Jarvis diga «Enseguida, señor.». Cuando Claude Code termina, el oyente
 (bin/escucha.py) lee el resultado y se lo dice al usuario en voz alta.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import sys
 import time
@@ -31,6 +32,8 @@ _RUNNER = _ROOT / "bin" / "tarea_claude.py"
 _MAX_RUNNING = 3
 _STALE_S = 30 * 60  # una tarea «en curso» más antigua se da por muerta
 _MAX_TASK_CHARS = 4000
+_DUPLICATE_WINDOW_S = 8  # [Nau] 26/11/2026: antes 90 s; solo frena la misma frase transcrita dos veces seguidas
+_DUPLICATE_OVERLAP = 0.8  # solo repeticiones casi idénticas; el arreglo de fondo es cortar el turno
 
 
 def _running_tasks() -> int:
@@ -44,6 +47,57 @@ def _running_tasks() -> int:
         if task.get("estado") in ("pendiente", "en_curso") and now - task.get("creada", 0) < _STALE_S:
             count += 1
     return count
+
+
+def _recent_duplicate(tarea: str) -> bool:
+    """[Nau] 26/11/2026: ¿hay una tarea casi igual creada hace muy poco y sin terminar?
+    Una sola petición dicha con pausas llegó a lanzar 4 tareas distintas."""
+    now = time.time()
+    wanted = _words(tarea)
+    if not wanted:
+        return False
+    for path in _TASKS_DIR.glob("*.json"):
+        try:
+            task = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (task.get("estado") not in ("pendiente", "en_curso")
+                or now - float(task.get("creada") or 0) >= _DUPLICATE_WINDOW_S):
+            continue
+        other = _words(str(task.get("tarea", "")))
+        if other and len(wanted & other) / min(len(wanted), len(other)) >= _DUPLICATE_OVERLAP:
+            return True
+    return False
+
+
+def _words(text: str) -> set[str]:
+    """Palabras con contenido (4 letras o más) de una orden, para comparar encargos."""
+    return set(re.findall(r"\w{4,}", text.casefold()))
+
+
+def _worker():
+    """bin/trabajador_claude.py (el trabajador siempre encendido)."""
+    bin_dir = str(_ROOT / "bin")
+    if bin_dir not in sys.path:
+        sys.path.insert(0, bin_dir)
+    import trabajador_claude
+
+    return trabajador_claude
+
+
+def _worker_can_take(sesion: str, proyecto: str) -> bool:
+    """[Nau] 26/11/2026: ¿la hace el trabajador? Sí, salvo si está ocupado (no se espera en
+    cola: va aparte, como antes), si es en un proyecto (arranca en su carpeta) o si continúa
+    una sesión que no es la suya."""
+    if proyecto:
+        return False
+    try:
+        state = _worker().worker_state()
+    except Exception:  # noqa: BLE001 - sin trabajador, como antes
+        return False
+    if state.get("ocupado"):
+        return False
+    return not sesion or sesion == state.get("session_id")
 
 
 def _python() -> str:
@@ -80,7 +134,7 @@ class ClaudeCodeTaskTool(BaseTool):
                 "pida una acción; no la uses para preguntas que puedes contestar tú. "
                 "Escribe en 'tarea' la orden completa y clara, en español, con todo el "
                 "contexto de la conversación que haga falta. Vuelve al momento: dile a "
-                "El usuario en una frase corta que te pones con ello y que le avisarás al "
+                "El usuario solo «Enseguida, señor.»; le avisarás al "
                 "terminar. Si el usuario responde a una tarea anterior, pasa en 'sesion' el "
                 "identificador de sesión que se te indicó. Pon 'confirmado' a true SOLO "
                 "cuando el usuario acabe de decir claramente que sí a una confirmación pendiente."
@@ -129,45 +183,72 @@ class ClaudeCodeTaskTool(BaseTool):
         if not tarea:
             return self._fail("Falta la orden en 'tarea'.")
         _TASKS_DIR.mkdir(parents=True, exist_ok=True)
+        if not params.get("confirmado") and _recent_duplicate(tarea):
+            return self._fail(
+                "Esa misma tarea ya está en marcha desde hace un momento: no la repito. "
+                "Ya le has dicho al usuario «Enseguida, señor.»: no digas nada más."
+            )
         if _running_tasks() >= _MAX_RUNNING:
             return self._fail(
                 f"Ya hay {_MAX_RUNNING} tareas en marcha. Dile al usuario que espere a que acabe alguna."
             )
         task_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        sesion = str(params.get("sesion", "") or "").strip()
+        proyecto = str(params.get("proyecto", "") or "").strip()
+        use_worker = _worker_can_take(sesion, proyecto)
         task = {
             "id": task_id,
             "tarea": tarea,
-            "sesion_previa": str(params.get("sesion", "") or "").strip() or None,
+            "sesion_previa": sesion or None,
             "confirmado": params.get("confirmado") is True,
-            "proyecto": str(params.get("proyecto", "") or "").strip() or None,
+            "proyecto": proyecto or None,
             "estado": "pendiente",
             "creada": time.time(),
             "anunciado": False,
+            "trabajador": use_worker,
         }
         path = _TASKS_DIR / f"{task_id}.json"
         path.write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
+        if use_worker:
+            # [Nau] 26/11/2026: la hace el trabajador siempre encendido (sin arranque en frío)
+            try:
+                _worker().ensure_running()
+                logger.info("Tarea %s para el trabajador", task_id)
+                return self._launched(task_id)
+            except OSError:
+                logger.exception("No arranca el trabajador; la tarea va aparte")
+                task["trabajador"] = False
+                path.write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
         flags = (
             subprocess.CREATE_NO_WINDOW
             | subprocess.DETACHED_PROCESS
             | subprocess.CREATE_NEW_PROCESS_GROUP
         )
+        command = [_python(), str(_RUNNER), task_id]
+        popen = dict(cwd=str(_ROOT), close_fds=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
-            subprocess.Popen(
-                [_python(), str(_RUNNER), task_id],
-                cwd=str(_ROOT), creationflags=flags, close_fds=True,
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        except OSError as exc:
-            logger.exception("No se pudo lanzar la tarea de Claude Code")
-            path.unlink(missing_ok=True)
-            return self._fail("No he podido ponerme con la tarea por un fallo técnico.")
+            # [Nau] 26/11/2026: fuera del Job Object del cerebro; si no, la tarea moría al
+            # reiniciarse el oyente y se quedaba «en curso» para siempre
+            subprocess.Popen(command, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+                             **popen)
+        except OSError:
+            try:  # sin permiso para salir del Job: como antes
+                subprocess.Popen(command, creationflags=flags, **popen)
+            except OSError:
+                logger.exception("No se pudo lanzar la tarea de Claude Code")
+                path.unlink(missing_ok=True)
+                return self._fail("No he podido ponerme con la tarea por un fallo técnico.")
         logger.info("Tarea %s encargada a Claude Code", task_id)
+        return self._launched(task_id)
+
+    def _launched(self, task_id: str) -> ToolResult:
+        # [Nau] 26/11/2026: antes pedía «dile que te pones con ello» y Jarvis lo decía dos veces
         return ToolResult(
             tool_name=self.tool_id,
             content=(
-                f"Tarea {task_id} en marcha en segundo plano. Habla en primera persona y no "
-                "menciones nunca a Claude ni a Claude Code. Dile al usuario, "
-                "en una frase corta, que te pones con ello y que le avisarás al terminar."
+                f"Tarea {task_id} en marcha en segundo plano. Ya le has dicho al usuario que te "
+                "pones con ello («Enseguida, señor.»): no digas nada más ahora; le contarás el resultado al terminar."
             ),
             success=True,
             metadata={"task_id": task_id},

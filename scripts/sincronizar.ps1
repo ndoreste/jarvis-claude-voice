@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Copia al repositorio el código de una instalación de Jarvis que ya funciona.
 
@@ -31,11 +31,13 @@ $overlay = @(
     'src/openjarvis/server/api_routes.py'                    # M  rutas del HUD
     'src/openjarvis/server/routes.py'                        # M  modelo cloud en /v1/models
     'src/openjarvis/speech/faster_whisper.py'                # M  hotwords y filtro de voz
+    'src/openjarvis/speech/elevenlabs_tts.py'                # M  voz turbo v2.5 en español
     'src/openjarvis/tools/__init__.py'                       # M  registra las herramientas nuevas
     'src/openjarvis/server/cpu_utility.py'                   # A  CPU como el Administrador de tareas
     'src/openjarvis/server/hud_routes.py'                    # A  API del HUD
     'src/openjarvis/tools/claude_code.py'                    # A  herramienta encargar_a_claude
     'src/openjarvis/tools/google_calendar.py'                # A  herramienta agenda_google
+    'src/openjarvis/speech/openvino_whisper.py'              # A  Whisper small en la NPU (OpenVINO)
     'frontend/src/App.tsx'                                   # M  el HUD es la portada
     'frontend/src/components/Chat/InputArea.tsx'             # M  modo conversación
     'frontend/src/hooks/useSpeech.ts'                        # M  modo conversación

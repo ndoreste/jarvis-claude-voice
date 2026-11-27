@@ -39,3 +39,6 @@ node_modules/
 Thumbs.db
 .vscode/
 .idea/
+
+# Copias de seguridad locales
+*.bak*

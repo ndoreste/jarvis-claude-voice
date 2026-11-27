@@ -124,9 +124,18 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 cd "$J\src"
 uv python install 3.11
 uv sync --python 3.11 --extra desktop --extra inference-cloud
-uv pip install openwakeword==0.6.0 scikit-learn livekit==1.2.1
+uv pip install openwakeword==0.6.0 scikit-learn livekit==1.2.1 pycaw==20240210
 .\.venv\Scripts\python.exe -c "from openwakeword.utils import download_models; download_models(['hey_jarvis'])"
 ```
+
+**Opcional, si tu PC tiene NPU (Intel Core Ultra):** Whisper `small` en la NPU transcribe en 0,3–0,7 s en vez de ~1,3 s. Instala OpenVINO y descarga el modelo a `data\modelos\whisper-small-int8-ov` (desde la carpeta `src\`):
+
+```powershell
+uv pip install openvino-genai==2026.4.1.0
+.\.venv\Scripts\python.exe -c "from huggingface_hub import snapshot_download; snapshot_download('OpenVINO/whisper-small-int8-ov', local_dir=r'..\data\modelos\whisper-small-int8-ov')"
+```
+
+La primera vez tarda 20–45 s en compilar el modelo para la NPU. Sin OpenVINO, Jarvis usa `small` en la CPU.
 
 Si instalaste Rust en el paso 1, compila también la extensión:
 
@@ -142,7 +151,7 @@ uv run maturin develop -m rust/crates/openjarvis-python/Cargo.toml
 .\.venv\Scripts\python.exe -c "import faster_whisper, openwakeword, sounddevice; from livekit import rtc; print('ok')"
 ```
 
-> ⚠️ `openwakeword`, `scikit-learn` y `livekit` no están en `pyproject.toml` de OpenJarvis. Si algún día haces `uv sync --exact`, se borran y hay que repetir esta línea.
+> ⚠️ `openwakeword`, `scikit-learn`, `livekit` y `pycaw` (volumen por aplicación: baja la música mientras hablas) no están en `pyproject.toml` de OpenJarvis. Si algún día haces `uv sync --exact`, se borran y hay que repetir esta línea.
 
 ## 6. Web del HUD
 

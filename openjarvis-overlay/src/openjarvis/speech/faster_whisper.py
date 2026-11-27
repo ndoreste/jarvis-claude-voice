@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from openjarvis.core.registry import SpeechRegistry
 from openjarvis.speech._stubs import Segment, SpeechBackend, TranscriptionResult
+from openjarvis.speech.openvino_whisper import OpenVinoWhisper
 
 try:
     from faster_whisper import WhisperModel
@@ -23,6 +24,14 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 HOTWORDS = "Jarvis"
+INITIAL_PROMPT = (
+    "Conversación en español de España con su asistente. Nau habla de CorGon, ASIR, "
+    "Linux, VirtualBox, WhatsApp, Obsidian, Chrome, Skool, Imperio Agéntico, el micro y la agenda."
+)
+# [Nau] 26/11/2026: modelos que se pueden pedir además del de config (campo «model»)
+EXTRA_MODELS = {"small"}
+# Y su versión de OpenVINO (NPU/gráfica), mucho más rápida; si falla, faster-whisper en la CPU
+OPENVINO_MODELS = {"small": OpenVinoWhisper("whisper-small-int8-ov")}
 
 
 @SpeechRegistry.register("faster-whisper")
@@ -41,6 +50,7 @@ class FasterWhisperBackend(SpeechBackend):
         self._device = device
         self._compute_type = compute_type
         self._model: Optional[WhisperModel] = None
+        self._extras: dict = {}  # [Nau] modelos de EXTRA_MODELS ya cargados
         self._last_error: Optional[str] = None
 
     def _resolve_compute_type(self) -> str:
@@ -79,6 +89,16 @@ class FasterWhisperBackend(SpeechBackend):
         )
         return fallback
 
+    def _extra_model(self, size: str) -> WhisperModel:
+        """[Nau] 26/11/2026: otro modelo bajo demanda («small» para la conversación: entiende
+        el habla a ritmo normal; el «base» por defecto sigue para despertar, que es más rápido)."""
+        if size not in self._extras:
+            self._ensure_model()  # comprueba que faster-whisper está instalado
+            self._extras[size] = WhisperModel(
+                size, device=self._device, compute_type=self._resolve_compute_type(),
+                cpu_threads=12)  # 12 hilos: 1,17 s frente a 1,25 s con 8 (medido)
+        return self._extras[size]
+
     def _ensure_model(self) -> WhisperModel:
         """Lazy-load the Whisper model on first use."""
         if self._model is None:
@@ -105,10 +125,20 @@ class FasterWhisperBackend(SpeechBackend):
         *,
         format: str = "wav",
         language: Optional[str] = None,
+        model_size: Optional[str] = None,
     ) -> TranscriptionResult:
         """Transcribe audio bytes using Faster-Whisper."""
+        fast = OPENVINO_MODELS.get(model_size or "")
+        if fast is not None and format.lstrip(".") == "wav":
+            text = fast.transcribe(audio, language, INITIAL_PROMPT, HOTWORDS)
+            if text is not None:
+                return TranscriptionResult(text=text, language=language, confidence=None,
+                                           duration_seconds=0.0, segments=[])
         try:
-            model = self._ensure_model()
+            if model_size and model_size != self._model_size and model_size in EXTRA_MODELS:
+                model = self._extra_model(model_size)
+            else:
+                model = self._ensure_model()
 
             # Write audio to a temp file (faster-whisper needs a file path).
             # delete=False + manual unlink: on Windows an open
@@ -126,7 +156,13 @@ class FasterWhisperBackend(SpeechBackend):
                 # antes de transcribir, así Whisper no se inventa frases con ellos.
                 # [Nau] 09/11/2026: beam_size=1 (búsqueda voraz): igual de preciso con frases
                 # cortas y hasta 0,4 s más rápido que el beam 5 por defecto con la CPU cargada.
-                kwargs = {"hotwords": HOTWORDS, "vad_filter": True, "beam_size": 1}
+                # [Nau] 24/11/2026: initial_prompt con su vocabulario (CorGon salía «Corbón»);
+                # sin «Jarvis» dentro, para que no se invente el nombre con ruido (probado con
+                # silencio y ruido: no escribe nada).
+                # [Nau] 26/11/2026: without_timestamps (no se usan): small 1,42 → 1,34 s (medido)
+                kwargs = {"hotwords": HOTWORDS, "vad_filter": True, "beam_size": 1,
+                          "initial_prompt": INITIAL_PROMPT,
+                          "condition_on_previous_text": False, "without_timestamps": True}
                 if language:
                     kwargs["language"] = language
 
