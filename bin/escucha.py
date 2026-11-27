@@ -82,7 +82,7 @@ SILENCE_S = 0.4
 EARLY_STT_SILENCE_S = 0.15
 EARLY_STT_TAIL_RATIO = 0.35  # sonido tras la anticipada por encima de esto (× umbral de voz): se descarta
 NO_SPEECH_S = 6.0
-FOLLOW_UP_S = 20.0  # margen para seguir hablando tras cada respuesta ([Nau] 12 → 20 s el 26/11/2026)
+FOLLOW_UP_S = 40.0  # margen para seguir hablando tras cada respuesta ([Nau] 12 → 20 s el 26/11; 20 → 40 s el 27/11/2026)
 MAX_UTTERANCE_S = 20.0
 # [Nau] 26/11/2026: lo que Nau le pide se transcribe con Whisper «small»: entiende el habla a
 # ritmo normal (con «base», «Hola Jarvis, ábreme…» dicho seguido salía «Por la Jarvis…»).
@@ -791,10 +791,17 @@ def record_utterance(
     pending: EarlyTranscript | None = None
     pending_at = 0
     quiet_s = 0.0
-    while elapsed < MAX_UTTERANCE_S:
+    # [Nau] 27/11/2026: el tope de MAX_UTTERANCE_S cuenta desde que empieza a hablar. Antes
+    # contaba desde el principio y cortaba la espera a los 20 s: FOLLOW_UP_S de 40 s no hacía nada
+    speaking_s = 0.0
+    while not heard or speaking_s < MAX_UTTERANCE_S:
         frame = read_frame(stream)
         frames.append(frame)
         elapsed += frame_s
+        if heard:
+            speaking_s += frame_s
+        elif len(frames) > SEGMENT_PREROLL_FRAMES + MIN_SPEECH_FRAMES:
+            del frames[0]  # mientras espera, solo se guarda el audio justo antes de la voz
         rms = frame_rms(frame)
         publish_level(rms)
         if rms > speech_threshold(floor):
@@ -953,6 +960,7 @@ class Turn:
         text = early.result() if early is not None else None
         self.text = text if text is not None else transcribe(pcm, CONVERSATION_STT_MODEL)
         self.transcribed_s = time.monotonic() - self.heard_at
+        self.continuations = 0  # veces que siguió hablando tras una pausa
 
     def keep_listening(self, stream: Microphone, resumed: list[np.ndarray] | None = None) -> None:
         """Mientras el usuario siga hablando (o la frase se haya quedado a medias), sigue grabando."""
@@ -967,9 +975,14 @@ class Turn:
             if more is None:
                 return
             self.pcm = np.concatenate([self.pcm, more])
+            # [Nau] 27/11/2026: la espera se cuenta desde que calla DE VERDAD (la última vez);
+            # antes contaba desde la primera pausa y el log daba «23 s» que eran él hablando
+            self.heard_at = time.monotonic()
             # [Nau] 26/11/2026: con música, la frase entera puede salir en bucle (se descarta
             # como ruido): entonces se queda lo que ya se había entendido
             self.text = transcribe(self.pcm, CONVERSATION_STT_MODEL) or self.text
+            self.transcribed_s = time.monotonic() - self.heard_at
+            self.continuations += 1
 
 
 def get_reply(messages: list[dict], model: str, text: str, recalled: dict | None) -> str | None:
@@ -1196,8 +1209,9 @@ def respond(stream: Microphone, messages: list[dict], model: str, turn: Turn,
     assert answer is not None
     latency = time.monotonic() - turn.heard_at
     # [Nau] para medir dónde se va el tiempo (sin contar los SILENCE_S de detectar el final)
-    log.info("Tiempos: transcripción %.2f s, primera frase lista a los %.2f s",
-             turn.transcribed_s, latency)
+    log.info("Tiempos: transcripción %.2f s, primera frase lista a los %.2f s%s",
+             turn.transcribed_s, latency,
+             f" (siguió hablando {turn.continuations} veces)" if turn.continuations else "")
     heard = deliver(stream, messages, turn.text, answer, first, recalled, latency, turn.floor)
     return True, heard
 
@@ -1505,8 +1519,9 @@ def worth_second_opinion(text: str, segment: np.ndarray) -> bool:
         return False
     words = [_plain(w) for w in re.findall(r"[\w']+", text)]
     starts_like_call = bool(words) and words[0] in CALL_LIKE_WORDS and len(words) <= 4
-    # Con el hilo abierto también vale el nombre al final («…ponme música, Jarvis»)
-    ends_like_call = _thread.active() and bool(words) and any(
+    # Con el hilo abierto también vale el nombre al final («…ponme música, Jarvis»); [Nau] 27/11:
+    # solo si la frase cabe en un reenganche (más larga, rejoin_by_name nunca la acepta)
+    ends_like_call = _thread.active() and 0 < len(words) <= REJOIN_MAX_WORDS and any(
         is_jarvis(w) or _sounds_like_jarvis(w) for w in words[-2:])
     return starts_like_call or ends_like_call or mentions_jarvis_early(text)
 

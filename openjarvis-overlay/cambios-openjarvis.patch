@@ -1,4 +1,4 @@
-﻿diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
 index caf7f55..8b93b75 100644
 --- a/frontend/src/App.tsx
 +++ b/frontend/src/App.tsx

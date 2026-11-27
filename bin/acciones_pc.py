@@ -12,6 +12,7 @@ directo (jarvis-herramienta accion …):
     captura                captura de pantalla (Imágenes\\Capturas de pantalla)
     copiar "texto"         al portapapeles
     musica play|pausa|siguiente|anterior
+    musica play --lista "nombre"   una lista/canción de Spotify ya aprendida (data/spotify-listas.json)
     volumen subir|bajar|silencio|activar|<0-100>
     bloquear
 Además, el oyente usa duck_media()/restore_media() para bajar la música mientras le hablas.
@@ -29,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import uuid
@@ -114,6 +116,23 @@ SPOTIFY_EXE = "spotify.exe"
 SPOTIFY_IDLE_TITLE = re.compile(r"^spotify(?: (?:premium|free))?$", re.IGNORECASE)
 SPOTIFY_START_WAIT_S = 15.0
 SPOTIFY_READY_S = 2.0
+SPOTIFY_LISTS = ROOT / "data" / "spotify-listas.json"  # nombre → spotify:playlist:… (aprendida)
+SPOTIFY_URI = re.compile(r"^spotify:(?:playlist|album|track|artist|show|episode):[A-Za-z0-9]{10,40}$")
+LIST_MATCH = 0.8
+LIST_FILLER_WORDS = {"mi", "mis", "tu", "la", "el", "los", "las", "de", "del", "lista", "listas",
+                     "playlist", "mix", "mezcla", "disco", "album", "cancion", "una", "un", "spotify"}
+SPOTIFY_PAGE_WAIT_S = 8.0  # lo que se espera a que se abra la lista para pulsar su play
+SPOTIFY_PAUSE_SETTLE_S = 0.6  # tras pausar, para que la página vuelva a llevar su nombre
+_LIST_TITLES: dict[str, str] = {}  # URI → nombre de la lista en Spotify (se aprende al ponerla)
+SPOTIFY_SAME_PAGE_S = 2.0  # si el título no cambia en este rato, era la misma lista
+# Nombres de los botones de la cabecera de una lista (Spotify en español o en inglés)
+SPOTIFY_SHUFFLE_BUTTON = re.compile(
+    r"^(?:(?:Habilitar|Deshabilitar) la reproducción aleatoria en|(?:Enable|Disable) shuffle for) (.+)$")
+SPOTIFY_PLAY_WORDS = ("Reproducir", "Play")
+# En el oyente, lo lento (Spotify) va en un hilo; una orden por consola termina al volver, así que
+# herramientas_voz.main lo pone a False para hacerlo antes de salir
+BACKGROUND_OK = True
+SPOTIFY_PAUSE_WORDS = ("Pausar", "Pause")
 # Teclas multimedia (llegan al reproductor aunque no tenga el foco)
 VK = {"playpause": 0xB3, "siguiente": 0xB0, "anterior": 0xB1,
       "silencio": 0xAD, "bajar": 0xAE, "subir": 0xAF}
@@ -459,6 +478,196 @@ def music(order: str) -> str:
         press("anterior")
         return "canción anterior"
     raise ActionError(f"Orden de música desconocida: «{order}».")
+
+
+# ── Listas de Spotify (caché aprendida) ───────────────────────────────────────
+# [Nau] 27/11/2026: «ponme mi Mix de R&B» iba como tarea (80 s: buscar con el conector de
+# Spotify y probar). Ahora se abre su URI y se pulsa el botón de reproducir de la lista
+# (start_spotify_list); como sin su API no se puede buscar por nombre, la primera vez la busca
+# una tarea y la apunta aquí (_guardar_lista); las siguientes van en ~1–3 s.
+
+def spotify_lists() -> dict[str, str]:
+    try:
+        data = json.loads(SPOTIFY_LISTS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if SPOTIFY_URI.match(str(v))} \
+        if isinstance(data, dict) else {}
+
+
+def save_list(name: str, uri: str) -> str:
+    uri = uri.strip().removesuffix(":play")
+    if not name.strip() or not SPOTIFY_URI.match(uri):
+        raise ActionError(f"URI de Spotify no válida: «{uri}».")
+    lists = {**spotify_lists(), name.strip(): uri}
+    SPOTIFY_LISTS.write_text(json.dumps(lists, ensure_ascii=False, indent=2), encoding="utf-8")
+    return f"«{name.strip()}» guardada"
+
+
+def _list_core(name: str) -> str:
+    """Lo que distingue a una lista: «Mix de Nu Metal» y «mi mezcla de nu metal» → «nu metal»."""
+    return " ".join(w for w in _plain(name).split() if w not in LIST_FILLER_WORDS)
+
+
+def _best_list(query: str, lists: dict[str, str]) -> tuple[float, str, str]:
+    """[Nau] 27/11/2026: como _best, pero sin las palabras de relleno («Mix de Nu Metal» no
+    encontraba «mezcla de nu metal» y lo mandaba a una tarea). Con empate, gana el parecido
+    del nombre entero."""
+    core = _list_core(query)
+    scored = [(max(_similarity(query, name), _similarity(core, _list_core(name)) if core else 0.0),
+               _similarity(query, name), name, uri) for name, uri in lists.items()]
+    if not scored:
+        return 0.0, "", ""
+    score, _raw, name, uri = max(scored)
+    return score, name, uri
+
+
+def _learn_hint(name: str) -> str:
+    """Lo que se le pide a la tarea cuando la lista no está en la caché."""
+    command = f"& \"{ROOT / 'src' / '.venv' / 'Scripts' / 'python.exe'}\" \"{Path(__file__).resolve()}\""
+    return (f"no tengo «{name}» guardada. Busca su URI en Spotify (spotify:playlist:ID, o album/"
+            f"track), apúntala con: {command} _guardar_lista \"{name}\" \"spotify:playlist:ID\" "
+            f"y ponla con: {command} _poner_lista \"{name}\" (cambia de lista aunque suene otra)")
+
+
+def play_list(name: str, wait: bool = False) -> str:
+    """Pone una lista aprendida. El trabajo (abrir Spotify, ir a la lista y darle a su botón de
+    reproducir) va en un hilo: el oyente no se queda esperando. wait=True lo hace aquí mismo
+    (la orden por consola, que termina al volver)."""
+    score, found, uri = _best_list(name, spotify_lists())
+    if score < LIST_MATCH:
+        raise ActionError(_learn_hint(name))
+    was_closed = spotify_state() == "cerrado"
+    if wait or not BACKGROUND_OK:
+        start_spotify_list(uri)
+    else:
+        threading.Thread(target=start_spotify_list, args=(uri,), daemon=True,
+                         name="spotify-lista").start()
+    return f"{'abro Spotify y ' if was_closed else ''}pongo «{found}»"
+
+
+def start_spotify_list(uri: str) -> None:
+    """Abre Spotify si hace falta, va a la lista y pulsa su botón «Reproducir».
+
+    [Nau] 27/11/2026: la URI «…:play» no cambia de lista si ya suena otra (seguía la anterior,
+    probado) ni da al play con Spotify recién abierto. El botón de la cabecera de la lista sí:
+    se pulsa por accesibilidad de Windows (UI Automation, comtypes). Si no se encuentra, al
+    menos se pausa la anterior (pedido por Nau) y la nueva queda abierta en pantalla."""
+    try:
+        if spotify_state() == "cerrado":
+            _start("spotify:")
+            deadline = time.monotonic() + SPOTIFY_START_WAIT_S
+            while time.monotonic() < deadline and spotify_state() == "cerrado":
+                time.sleep(0.3)
+            time.sleep(SPOTIFY_READY_S)
+        _com_init()
+        if spotify_state() == "sonando":
+            if _is_playing_list(uri):
+                _log_spotify("esa lista ya estaba sonando")
+                return
+            # Mientras suena, Spotify pone la canción como nombre de la página y no se sabe qué
+            # lista está abierta. Se pausa antes (Nau lo pidió: que la anterior no siga sonando)
+            press("playpause")
+            time.sleep(SPOTIFY_PAUSE_SETTLE_S)
+        before = _spotify_page_title()
+        _start(uri)
+        title = _press_list_play(before)
+        if title:
+            _LIST_TITLES[uri] = title
+            _log_spotify("lista puesta con su botón")
+            return
+        _log_spotify("no encontré el botón de reproducir: la anterior queda en pausa")
+    except Exception as exc:  # noqa: BLE001 - va en un hilo: que no tumbe al oyente
+        _log_spotify(f"fallo al poner la lista: {exc!r}"[:300])
+
+
+def _log_spotify(text: str) -> None:
+    try:
+        with (ROOT / "data" / "acciones.log").open("a", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} spotify: {text}\n")
+    except OSError:
+        pass
+
+
+def _uia():
+    """(objeto UI Automation, módulo de tipos) o (None, None) si no hay comtypes."""
+    try:
+        import comtypes.client
+
+        comtypes.client.GetModule("UIAutomationCore.dll")
+        from comtypes.gen import UIAutomationClient as uia_types
+
+        return comtypes.client.CreateObject(uia_types.CUIAutomation,
+                                            interface=uia_types.IUIAutomation), uia_types
+    except (ImportError, OSError):
+        return None, None
+
+
+def _spotify_snapshot() -> tuple[list, str]:
+    """(botones, nombre de la página) de la ventana de Spotify, por UI Automation."""
+    uia, types = _uia()
+    hwnds = [h for h, _pid, exe in _windows() if exe == SPOTIFY_EXE]
+    if uia is None or not hwnds:
+        return [], ""
+    root = uia.ElementFromHandle(hwnds[0])
+    cond = uia.CreatePropertyCondition(types.UIA_ControlTypePropertyId, types.UIA_ButtonControlTypeId)
+    found = root.FindAll(types.TreeScope_Descendants, cond)
+    doc = root.FindFirst(types.TreeScope_Descendants, uia.CreatePropertyCondition(
+        types.UIA_ControlTypePropertyId, types.UIA_DocumentControlTypeId))
+    return [found.GetElement(i) for i in range(found.Length)], (doc.CurrentName or "") if doc else ""
+
+
+def _spotify_page_title(snapshot: tuple[list, str] | None = None) -> str:
+    """Título de la lista abierta. Hay dos botones de aleatorio («…aleatoria en X»): el de la
+    barra de abajo (la lista que SUENA) y el de la cabecera de la página. Vale el que coincide
+    con el nombre de la página («Mi Mezcla Nu Metal - playlist by … | Spotify»)."""
+    buttons, page = snapshot if snapshot is not None else _spotify_snapshot()
+    titles = [m.group(1) for b in buttons if (m := SPOTIFY_SHUFFLE_BUTTON.match(b.CurrentName or ""))]
+    on_page = [t for t in titles if page.startswith(t)]
+    if on_page:
+        return max(on_page, key=len)
+    return ""
+
+
+def _is_playing_list(uri: str) -> bool:
+    """¿Suena ya esa lista? El botón de aleatorio de la barra de abajo lleva el nombre de lo
+    que suena; el nombre de cada lista en Spotify se aprende al ponerla (_LIST_TITLES)."""
+    title = _LIST_TITLES.get(uri)
+    if not title:
+        return False
+    buttons, _page = _spotify_snapshot()
+    return any((m := SPOTIFY_SHUFFLE_BUTTON.match(b.CurrentName or "")) and m.group(1) == title
+               for b in buttons)
+
+
+def _press_list_play(previous_title: str) -> str:
+    """Espera a que se abra la lista nueva y pulsa «Reproducir <lista>». Devuelve su nombre en
+    Spotify, o '' si no ha encontrado el botón."""
+    _uia_obj, types = _uia()
+    if types is None:
+        return ""
+    started = time.monotonic()
+    while time.monotonic() - started < SPOTIFY_PAGE_WAIT_S:
+        snapshot = _spotify_snapshot()
+        buttons = snapshot[0]
+        title = _spotify_page_title(snapshot)
+        # La página anterior puede seguir un momento: se espera a que cambie (o a que pase
+        # un rato, por si era la misma lista)
+        if title and (title != previous_title or time.monotonic() - started > SPOTIFY_SAME_PAGE_S):
+            names = {b.CurrentName: b for b in buttons}
+            if any(f"{word} {title}" in names for word in SPOTIFY_PAUSE_WORDS):
+                return title  # ya está sonando esa lista
+            for word in SPOTIFY_PLAY_WORDS:
+                button = names.get(f"{word} {title}")
+                if button is not None:
+                    try:
+                        pattern = button.GetCurrentPattern(types.UIA_InvokePatternId)
+                        pattern.QueryInterface(types.IUIAutomationInvokePattern).Invoke()
+                        return title
+                    except OSError:  # COMError: la página aún se está montando; se reintenta
+                        break
+        time.sleep(0.3)
+    return ""
 
 
 # ── Volumen (pycaw) ───────────────────────────────────────────────────────────
@@ -930,7 +1139,7 @@ def lock() -> str:
 
 
 def run(kind: str, value: str = "", text: str = "", where: str = "",
-        open_it: bool = False) -> str:
+        open_it: bool = False, playlist: str = "") -> str:
     """Punto de entrada de jarvis-herramienta accion. Lanza ActionError si no se puede."""
     kind = _plain(kind)
     if kind == "abrir":
@@ -955,7 +1164,7 @@ def run(kind: str, value: str = "", text: str = "", where: str = "",
     if kind == "cerrar":
         return close_app(value)
     if kind == "musica":
-        return music(value or "play")
+        return play_list(playlist) if playlist.strip() else music(value or "play")
     if kind == "volumen":
         return volume(value)
     if kind == "bloquear":
@@ -965,3 +1174,15 @@ def run(kind: str, value: str = "", text: str = "", where: str = "",
 
 if __name__ == "__main__" and sys.argv[1:2] == ["_spotify_play"]:
     start_spotify_and_play()
+elif __name__ == "__main__" and sys.argv[1:2] == ["_poner_lista"] and len(sys.argv) == 3:
+    try:
+        print(play_list(sys.argv[2], wait=True))
+    except ActionError as exc:
+        print(exc)
+        sys.exit(1)
+elif __name__ == "__main__" and sys.argv[1:2] == ["_guardar_lista"] and len(sys.argv) == 4:
+    try:
+        print(save_list(sys.argv[2], sys.argv[3]))
+    except ActionError as exc:
+        print(exc)
+        sys.exit(1)
